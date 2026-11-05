@@ -1,0 +1,16 @@
+.env
+.env.local
+.env.production
+.env.*.local
+backend/.env
+atelimarket-frontend/.env
+atelimarket-frontend/.env.local
+
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+
+# Logs and local files
+*.log
+.DS_Store

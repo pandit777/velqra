@@ -1,0 +1,22 @@
+# AteliMarket Robots.txt
+# Optimized for AteliMarket search ranking
+
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /auth/
+Disallow: /api/
+
+# Allow crawling of product pages
+Allow: /product/
+Allow: /orders/
+Allow: /orders/track/
+
+# Sitemap location
+Sitemap: https://atelimarket.shop/sitemap.xml
+
+# Crawl delay
+Crawl-delay: 1
+
+# Host
+Host: https://atelimarket.shop

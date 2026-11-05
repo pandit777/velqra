@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: atelimarket-backend
+    env: node
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && node index.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: MONGO_URI
+        value: mongodb+srv://gs8901346287_db_user:AteliMarketPass2026@cluster0.xsoz4jh.mongodb.net/atelimarket?retryWrites=true&w=majority
+      - key: JWT_SECRET
+        value: atelimarket_super_secret_key_2026
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_URL
+        value: https://atelimarket.shop
