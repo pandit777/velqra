@@ -13,6 +13,40 @@ html {
   scroll-behavior: smooth;
 }
 
+.velqra-admin-shell {
+  color: #1e293b;
+}
+
+.velqra-admin-shell .bg-white {
+  color: #1e293b;
+}
+
+.velqra-admin-shell table td,
+.velqra-admin-shell table th,
+.velqra-admin-shell label,
+.velqra-admin-shell h2,
+.velqra-admin-shell h3,
+.velqra-admin-shell p {
+  color: #1e293b;
+}
+
+.velqra-admin-shell table thead th {
+  color: #64748b;
+}
+
+.velqra-admin-shell input,
+.velqra-admin-shell textarea,
+.velqra-admin-shell select,
+.velqra-admin-shell option {
+  color: #1e293b;
+}
+
+.velqra-admin-shell input::placeholder,
+.velqra-admin-shell textarea::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
   background-color: #0a0a0a;
@@ -92,10 +126,10 @@ body {
 }
 
 .velqra-main-header {
-  top: 0;
+  top: 30px !important;
   animation: none;
-  border-bottom: 1px solid #262626;
-  background: rgba(10, 10, 10, 0.92);
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
   backdrop-filter: blur(16px);
   box-shadow: none;
 }
@@ -138,8 +172,8 @@ body {
 }
 
 .velqra-main-header.is-scrolled {
-  background: rgba(10, 10, 10, 0.98);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  background: #ffffff;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
 }
 
 .velqra-header-logo {
@@ -306,6 +340,20 @@ body {
   aspect-ratio: 1 / 1.08;
   object-fit: cover;
   background: #f7f7f5;
+}
+
+@media (max-width: 640px) {
+  .velqra-product-grid-card img {
+    aspect-ratio: 1 / 1;
+  }
+
+  .velqra-product-grid-card {
+    width: 100%;
+  }
+
+  .velqra-product-grid-card h2 {
+    min-height: 0;
+  }
 }
 
 .velqra-product-discount {
@@ -519,6 +567,10 @@ header {
   transition: all 0.3s ease;
 }
 
+.velqra-main-header {
+  z-index: 70 !important;
+}
+
 body {
   padding-top: 104px;
 }
@@ -577,6 +629,46 @@ body {
   font-size: 1.15rem;
   white-space: nowrap;
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(212, 175, 55, 0.45);
+}
+
+.header-brand-image {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.logo .q-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.logo .q-tail {
+  position: absolute;
+  bottom: -4px;
+  right: -8px;
+  width: 28px;
+  height: 12px;
+  border-bottom: 4px solid #d4af37;
+  border-right: 4px solid #d4af37;
+  border-bottom-right-radius: 14px 10px;
+  transform: rotate(-15deg);
+  pointer-events: none;
+}
+
+.logo .tm-symbol {
+  margin-left: 14px;
+  padding: 1px 3px;
+  border: 1px solid #0d4630;
+  border-radius: 50%;
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1;
+  vertical-align: super;
+  color: #0d4630;
+  -webkit-text-fill-color: #0d4630;
 }
 
 .brand-trademark {

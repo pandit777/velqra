@@ -1,17 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
-import { isSupabaseConfigured, requireSupabaseAdmin, supabase } from './lib/supabase';
-import logo from './assets/logo.png';
+import { isSupabaseConfigured, supabase } from './lib/supabase';
 import banner1 from './assets/banner1.png';
 import banner2 from './assets/banner2.png';
 import banner3 from './assets/banner3.png';
+import velqraLogo from './assets/velqra-logo.png';
 
 // =============================================
 // API URLs - SECURE (Environment Variables)
 // =============================================
 const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;
+const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
+
+const getCachedProducts = () => {
+  try {
+    const cached = localStorage.getItem(PRODUCTS_CACHE_KEY);
+    const products = cached ? JSON.parse(cached) : [];
+    return Array.isArray(products) ? products : [];
+  } catch {
+    return [];
+  }
+};
 
 // =============================================
 // Helper Functions
@@ -411,49 +422,58 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 const POLICY_CONTENT = {
   privacy: {
     title: 'Privacy Policy',
-    intro: 'AteliMarket respects your privacy and protects the personal information shared while using our website.',
+    intro: 'VELQRA explains below how information submitted through this website is used.',
     sections: [
-      ['Information we collect', 'We may collect your name, contact details, delivery address, order information and account details when you use AteliMarket.'],
-      ['How we use information', 'Your information is used to process orders, provide support, improve the shopping experience and communicate important account or order updates.'],
-      ['Data protection', 'We use reasonable technical and organizational measures to protect your information. Payment details should not be shared through public messages or unsupported channels.'],
-      ['Your choices', 'You may request corrections or deletion of your account information by contacting our support team, subject to records required for active orders and legal obligations.']
+      ['Information we collect', 'We collect account, contact and delivery details, order and payment confirmation information, support communications, device and browser data, and cookies required to operate and secure the website.'],
+      ['How we use information', 'Information is used to create accounts, process and support orders, communicate status updates and maintain service security.'],
+      ['Data protection', 'We take reasonable measures to protect stored information. No website or payment system can guarantee absolute security; please do not share passwords, OTPs or complete card details.'],
+      ['Purpose and lawful processing', 'Information is processed to verify accounts, fulfill purchases, prevent fraud, arrange delivery, respond to support requests, improve services and comply with applicable financial and legal record requirements.'],
+      ['Requests and retention', 'For a correction or account request, email officialvelqra@gmail.com. Certain records may be retained where needed to resolve an order, prevent fraud or meet applicable requirements.']
     ]
   },
   terms: {
     title: 'Terms & Conditions',
-    intro: 'These terms govern your use of AteliMarket and placement of orders through the website.',
+    intro: 'These terms apply to purchases made through the VELQRA storefront.',
     sections: [
-      ['Website use', 'You agree to use the website lawfully and provide accurate account, billing, delivery and contact information.'],
+      ['Website use', 'You must provide accurate account, billing and delivery information and must not misuse the website, interfere with security controls, attempt unauthorized access or conduct fraudulent transactions.'],
+      ['Consumer disclosures', 'The displayed product description, final price, delivery charge, payment method, estimated delivery and applicable policies are shown before order confirmation. Packaging or presentation may vary from illustrative imagery.'],
       ['Orders and availability', 'An order is confirmed only after successful placement and confirmation. Products, prices and availability may change before dispatch.'],
-      ['Pricing and payment', 'All prices are shown in INR unless stated otherwise. Applicable delivery charges or taxes will be displayed during checkout.'],
-      ['Account responsibility', 'Keep your login credentials confidential and notify us promptly if you suspect unauthorized account activity.']
+      ['Pricing and payment', 'Prices are displayed in INR. Any delivery charge or discount applicable to an order will be shown before payment confirmation.'],
+      ['Account responsibility', 'Keep login credentials confidential and notify support promptly if you suspect unauthorized account activity.']
     ]
   },
   returns: {
     title: 'Return & Refund Policy',
-    intro: 'We want every AteliMarket purchase to be reliable, safe and satisfactory.',
+    intro: 'Return eligibility depends on the item condition and the reason reported for the request.',
     sections: [
-      ['Return request', 'Contact support within 48 hours of delivery for damaged, defective, incorrect or missing items, along with your order number and photos.'],
+      ['Return request', 'Report damaged, defective, incorrect or missing items within 48 hours of delivery, with the order ID and clear photos.'],
       ['Eligible items', 'Products must be unused, in original packaging and include all accessories, labels and free items received with the order.'],
+      ['Sealed package requirement', 'Returns are accepted only when the original product seal remains intact and the package is unused. Refund is not available for opened, unsealed or tampered products.'],
+      ['Return deadline', 'A return request must be submitted within 7 days of delivery. The return option disappears automatically after this period.'],
+      ['Online payment refund', 'Returns and refunds are available only for orders paid online. The exact order ID must be entered to confirm the return request.'],
       ['Refunds', 'Approved refunds are processed to the original payment method. Cash-on-delivery refunds may require verified bank details.'],
       ['Non-returnable items', 'Personal care, hygiene, opened consumables and specially customized products may not be returnable unless they arrived damaged or defective.']
     ]
   },
   shipping: {
     title: 'Shipping Policy',
-    intro: 'AteliMarket aims to deliver orders safely and within the timeframe shown during checkout.',
+    intro: 'Dispatch and delivery estimates may vary by location, product availability and courier conditions.',
     sections: [
       ['Processing time', 'Most confirmed orders are processed within 1-3 business days, excluding public holidays and service disruptions.'],
       ['Delivery time', 'Delivery timelines vary by location and product. The estimated date shown at checkout is indicative and may change due to courier availability.'],
       ['Shipping address', 'Customers must provide a complete and accurate delivery address. Failed delivery caused by incorrect information may incur additional charges.'],
-      ['Tracking', 'Tracking details are shared when available. Contact support if your order has not moved within the expected processing period.']
+      ['Tracking', 'Tracking details are shared when available. Contact support if your order has not moved within the expected processing period.'],
+      ['Service coverage', 'Availability, courier coverage and delivery estimates depend on the destination PIN code. Remote-area charges or additional transit time, if applicable, will be communicated before dispatch or settlement.'],
+      ['Delivery confirmation', 'Where permitted, inspect the outer package before accepting it. Report visible damage, leakage, missing items or an altered seal immediately with photographs through Contact Policy.']
     ]
   },
   contact: {
     title: 'Contact Policy',
-    intro: 'Our support team is available to help with orders, payments, deliveries and account questions.',
+    intro: 'Contact support using the verified details shown in the footer for order, payment, delivery or account questions.',
     sections: [
-      ['Support email', 'Email gs8901346287@gmail.com with your order number and a clear description of the issue.'],
+      ['Support email', 'Email officialvelqra@gmail.com with your order number and a clear description of the issue.'],
+      ['Phone and WhatsApp', 'Call or WhatsApp us at +91 90500 54177 for order, payment, delivery or account support.'],
+      ['Location', 'Near Priyanka Dhaba, Balaji Hospital, Ward No. 11, Ateli Mandi, Mahendragarh, Haryana. Map coordinates: 28.1038478, 76.2499368.'],
       ['Response time', 'We aim to respond within 1-2 business days. Order or delivery cases may require additional time for courier verification.'],
       ['Information required', 'Please include your registered name, order ID and relevant screenshots. Do not share passwords, full card numbers or OTPs.'],
       ['Escalations', 'If a resolution remains unresolved, reply to the latest support email and mark the message for follow-up.']
@@ -464,32 +484,41 @@ const POLICY_CONTENT = {
 const PolicyPage = ({ policy }) => {
   const content = POLICY_CONTENT[policy];
   return (
-    <main className="bg-[#f7f9f6] min-h-[70vh] py-10 md:py-14">
-      <article className="container mx-auto max-w-4xl">
-        <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
-          <div className="bg-[#0B3C5D] px-6 py-8 md:px-10 text-white">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/70">AteliMarket</p>
-            <h1 className="text-3xl md:text-4xl font-black mt-2">{content.title}</h1>
-          </div>
-          <div className="px-6 py-8 md:px-10 md:py-10">
-            <p className="text-slate-600 leading-7">{content.intro}</p>
-            <div className="mt-8 grid gap-6">
+    <main className="min-h-[70vh] bg-white px-4 py-10 text-[#252525] md:px-6 md:py-14">
+      <article className="mx-auto max-w-[860px]">
+        <div className="border-b border-[#d9d9d9] pb-7 md:pb-9">
+          <h1 className="text-[30px] font-bold leading-tight tracking-[-0.02em] md:text-[38px]">{content.title}</h1>
+          <p className="mt-4 max-w-2xl text-[15px] leading-7 text-[#626262] md:text-base">{content.intro}</p>
+        </div>
+        <div className="py-3 md:py-5">
+          <div>
               {content.sections.map(([heading, text]) => (
-                <section key={heading} className="border-t border-slate-100 pt-6">
-                  <h2 className="text-lg font-bold text-slate-900">{heading}</h2>
-                  <p className="mt-2 text-sm leading-7 text-slate-600">{text}</p>
+                <section key={heading} className="border-b border-[#e5e5e5] py-7 md:py-8">
+                  <h2 className="text-lg font-semibold tracking-[-0.01em] text-[#202020] md:text-xl">{heading}</h2>
+                  <p className="mt-3 text-[15px] leading-[1.85] text-[#555] md:text-base">{text}</p>
                 </section>
               ))}
             </div>
-            <p className="mt-8 text-xs text-slate-400">Last updated: November 2026</p>
+            {policy === 'contact' && (
+              <div className="mt-8 overflow-hidden border border-[#dedede]">
+                <iframe
+                  title="VELQRA location map"
+                  src="https://www.google.com/maps?q=28.1038478,76.2499368&z=19&output=embed"
+                  className="h-72 w-full border-0"
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  allowFullScreen
+                />
+              </div>
+            )}
+            <p className="mt-8 text-xs text-[#777]">Last updated: November 2026</p>
           </div>
-        </div>
       </article>
     </main>
   );
 };
 
-const AboutPage = () => {
+const DeveloperAboutLegacyPage = () => {
   return (
     <div className="container mx-auto max-w-4xl px-4 py-12">
       <div className="text-center mb-12">
@@ -535,7 +564,7 @@ const AboutPage = () => {
             <div className="bg-slate-50 rounded-xl p-4 mb-4 border border-slate-100">
               <p className="text-sm text-slate-700 leading-relaxed">
                 I'm Gourav Sharma, a passionate B.Tech final year student at IGU University 
-                with a strong interest in full-stack web development. I built AteliMarket to 
+                with a strong interest in full-stack web development. I built VELQRA to
                 create a seamless online shopping experience using modern technologies like 
                 React, Node.js, and Supabase.
               </p>
@@ -549,13 +578,13 @@ const AboutPage = () => {
                   </svg>
                   <span className="text-sm font-medium">GitHub</span>
                 </a>
-                <a href="mailto:gs8901346287@gmail.com" className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition flex items-center gap-2">
+                <a href="mailto:officialvelqra@gmail.com" className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition flex items-center gap-2">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                   </svg>
                   <span className="text-sm font-medium">Email</span>
                 </a>
-                <a href="tel:+918901346287" className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition flex items-center gap-2">
+                <a href="tel:+919050054177" className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg transition flex items-center gap-2">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
                   </svg>
@@ -569,6 +598,44 @@ const AboutPage = () => {
     </div>
   );
 };
+
+const AboutPage = () => (
+  <main className="min-h-[60vh] bg-white px-4 py-12 text-[#252525] md:px-6 md:py-16" aria-label="About VELQRA">
+    <article className="mx-auto max-w-[860px]">
+      <header className="border-b border-[#dedede] pb-8">
+        <h1 className="mt-3 text-[32px] font-bold leading-tight tracking-[-0.02em] md:text-[42px]">
+          Our story, built around thoughtful skincare
+        </h1>
+        <p className="mt-5 max-w-2xl text-[15px] leading-8 text-[#626262] md:text-base">
+          VELQRA was founded with a clear vision: to make considered, everyday skincare accessible through clear information, honest presentation and dependable service.
+        </p>
+      </header>
+
+      <section className="border-b border-[#e5e5e5] py-7 md:py-8">
+        <h2 className="text-xl font-semibold text-[#202020] md:text-2xl">Leadership</h2>
+        <p className="mt-3 max-w-3xl text-[15px] leading-8 text-[#555] md:text-base">
+          VELQRA is led and represented by its co-founders, Dr. Ajay Saini and Dr. Roshan Kumar.
+        </p>
+        <div className="mt-7 grid gap-5 md:grid-cols-2">
+          {['Dr. Ajay Saini', 'Dr. Roshan Kumar'].map((name) => (
+            <div key={name} className="border-t border-[#dedede] pt-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#888]">Co-Founder</p>
+              <h3 className="mt-2 text-xl font-semibold text-[#202020]">{name}</h3>
+              <p className="mt-3 text-sm leading-7 text-[#626262]">Co-founder of VELQRA, contributing to the brand vision and development of its skincare offering.</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="py-7 md:py-8">
+        <h2 className="text-xl font-semibold text-[#202020] md:text-2xl">Our approach</h2>
+        <p className="mt-4 text-[15px] leading-8 text-[#555] md:text-base">
+          We focus on straightforward product information, careful product presentation and a customer experience that remains consistent from discovery to delivery. Our goal is to help customers choose confidently and receive clear support throughout their order journey.
+        </p>
+      </section>
+    </article>
+  </main>
+);
 
 // =============================================
 // PRODUCT DETAIL PAGE - WITH VIDEO & ATTRIBUTES
@@ -613,6 +680,13 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           const productData = {
             ...data,
             _id: data._id || data.id,
+            originalPrice: Number(data.originalPrice ?? data.original_price ?? data.price ?? 0),
+            discountPercent: Number(data.discountPercent ?? data.discount_percent ?? 0),
+            price: Number(
+              data.price ??
+              Number(data.original_price ?? data.originalPrice ?? 0) *
+                (1 - Number(data.discountPercent ?? data.discount_percent ?? 0) / 100)
+            ),
             promoCode: data.promoCode || data.promo_code || '',
             promoDiscount: Number(data.promoDiscount ?? data.promo_discount ?? 0)
           };
@@ -1027,6 +1101,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
         'Confirmed': 'bg-blue-100 text-blue-700',
         'Shipped': 'bg-purple-100 text-purple-700',
         'Delivered': 'bg-green-100 text-green-700',
+        'Return Requested': 'bg-amber-100 text-amber-700',
         'Cancelled': 'bg-red-100 text-red-700'
       };
       return styles[status] || 'bg-slate-100 text-slate-700';
@@ -1037,6 +1112,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
         'Confirmed': 'bg-blue-100 text-blue-700',
         'Shipped': 'bg-purple-100 text-purple-700',
         'Delivered': 'bg-green-100 text-green-700',
+        'Return Requested': 'bg-amber-100 text-amber-700',
         'Cancelled': 'bg-red-100 text-red-700'
       };
       return styles[status] || 'bg-slate-100 text-slate-700';
@@ -1053,6 +1129,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
         'Confirmed': '📋 Order Confirmed',
         'Shipped': '🚚 Shipped',
         'Delivered': '📦 Delivered',
+        'Return Requested': '↩️ Return Requested',
         'Cancelled': '❌ Cancelled'
       };
       return statusMap[status] || status;
@@ -1065,6 +1142,53 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
     if (order.paymentMethod === 'cod' && order.status === 'Pending') return true;
     if (order.paymentMethod === 'online' && order.status === 'Payment Verification Pending') return true;
     return false;
+  };
+
+  const getDeliveredAt = (order) => {
+    const deliveredEntry = [...(order.statusHistory || [])]
+      .reverse()
+      .find((entry) => entry.status === 'Delivered');
+    return deliveredEntry?.timestamp ? new Date(deliveredEntry.timestamp) : new Date(order.updatedAt || order.createdAt);
+  };
+
+  const canRequestReturn = (order) => {
+    if (order.status !== 'Delivered' || order.paymentMethod !== 'online' || !order.createdAt) return false;
+    const deliveredAt = getDeliveredAt(order);
+    if (Number.isNaN(deliveredAt.getTime())) return false;
+    return Date.now() - deliveredAt.getTime() <= 7 * 24 * 60 * 60 * 1000;
+  };
+
+  const handleReturnRequest = async (order) => {
+    if (!canRequestReturn(order)) {
+      alert('Return window has expired or this order is not eligible for return.');
+      return;
+    }
+
+    const enteredOrderId = window.prompt(`Enter the full Order ID to confirm this return:\n${order._id}`);
+    if (!enteredOrderId) return;
+
+    const isSealed = window.confirm(
+      'Is the product completely sealed and unused, with the original packaging and seal intact?\n\nSelect OK only if the seal is intact. Opened/unsealed products are not eligible for refund.'
+    );
+
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('atelimarket_user_token');
+      const response = await axios.patch(
+        `${API_URL}/orders/${order._id}/return`,
+        { orderId: enteredOrderId.trim(), sealed: isSealed },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      );
+
+      if (response.data.success) {
+        alert('✅ Return request submitted. Refund will be processed after sealed-package verification.');
+        fetchOrders();
+      }
+    } catch (err) {
+      alert(err.response?.data?.message || 'Return request could not be submitted.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCancelOrder = async (orderId) => {
@@ -1190,6 +1314,14 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
                     {isCancellable && (
                       <button onClick={() => handleCancelOrder(order._id)} className="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-100 transition whitespace-nowrap">
                         Cancel Order
+                      </button>
+                    )}
+                    {canRequestReturn(order) && (
+                      <button
+                        onClick={() => handleReturnRequest(order)}
+                        className="bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-emerald-100 transition whitespace-nowrap"
+                      >
+                        Request Return
                       </button>
                     )}
                   </div>
@@ -1436,7 +1568,9 @@ const OrderTracking = () => {
 // MAIN APP COMPONENT
 // =============================================
 export default function App() {
-  const [products, setProducts] = useState([]);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [products, setProducts] = useState(getCachedProducts);
   const [cart, setCart] = useState(() => {
     const saved = localStorage.getItem('atelimarket_cart');
     return saved ? JSON.parse(saved) : [];
@@ -1448,14 +1582,15 @@ export default function App() {
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [placingOrder, setPlacingOrder] = useState(false);
   const [error, setError] = useState('');
-  const [activePolicy, setActivePolicy] = useState(null);
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
   const [activeBanner, setActiveBanner] = useState(0);
   const banners = [banner1, banner2, banner3];
 
   // Auth States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
-    return localStorage.getItem('atelimarket_admin') === 'true';
+    const savedUser = localStorage.getItem('atelimarket_user');
+    const user = savedUser ? JSON.parse(savedUser) : null;
+    return localStorage.getItem('atelimarket_admin') === 'true' && user?.role === 'admin';
   });
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -1507,7 +1642,7 @@ export default function App() {
   const [isMobileSocialOpen, setIsMobileSocialOpen] = useState(false);
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(() => {
-    return true;
+    return false;
   });
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
@@ -1563,11 +1698,49 @@ export default function App() {
 
   const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [adminAuthMode, setAdminAuthMode] = useState('login');
+  const isAdminLoginPath = location.pathname === '/admin/login';
+
+  useEffect(() => {
+    if (isAdminLoginPath && !isAdminLoggedIn) {
+      setAdminAuthMode('login');
+      setShowAdminAuth(true);
+    }
+  }, [isAdminLoginPath, isAdminLoggedIn]);
   const [pendingPaymentOrders, setPendingPaymentOrders] = useState([]);
 
-  const navigate = useNavigate();
-  const location = useLocation();
   const categories = ['All', 'Face Wash'];
+
+  useEffect(() => {
+    const verifyAdminSession = async () => {
+      const token = localStorage.getItem('atelimarket_token');
+      if (!token) {
+        setIsAdminLoggedIn(false);
+        localStorage.removeItem('atelimarket_admin');
+        return;
+      }
+
+      try {
+        const res = await axios.get(`${AUTH_URL}/verify`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const isAdmin = res.data.success && res.data.user?.role === 'admin';
+        setIsAdminLoggedIn(isAdmin);
+        if (isAdmin) {
+          localStorage.setItem('atelimarket_admin', 'true');
+          localStorage.setItem('atelimarket_user', JSON.stringify(res.data.user));
+          setCurrentUser(res.data.user);
+        } else {
+          localStorage.removeItem('atelimarket_admin');
+        }
+      } catch {
+        setIsAdminLoggedIn(false);
+        localStorage.removeItem('atelimarket_admin');
+        localStorage.removeItem('atelimarket_token');
+      }
+    };
+
+    verifyAdminSession();
+  }, []);
 
   useEffect(() => {
     if (location.pathname !== '/') {
@@ -1690,7 +1863,7 @@ export default function App() {
       return sum + ((item.originalPrice - item.price) * item.qty);
     }, 0);
 
-    return `🏷️ *AteliMarket Order Payment*
+    return `🏷️ *VELQRA Order Payment*
 
 🛒 *Order Details:*
 ${itemsList}
@@ -1706,11 +1879,11 @@ ${totalSavings > 0 ? `💰 *You Saved:* ₹${totalSavings}` : ''}
 📍 *Address:* ${delivery.address || ''}, ${delivery.city || ''}, ${delivery.state || ''} - ${delivery.pincode || ''}
 
 💳 *Payment Details:*
-UPI ID: 8901346287@fam
+UPI ID: 9050054177@fam
 Amount: ₹${total}
 
 📝 Please send payment screenshot after payment.
-🙏 Thank you for shopping at AteliMarket!`;
+🙏 Thank you for shopping at VELQRA!`;
   };
 
   const handlePlaceOrder = async (e) => {
@@ -1807,7 +1980,7 @@ Amount: ₹${total}
         if (paymentMethod === 'online') {
           showToast('✅ Order placed! Please complete payment via WhatsApp UPI.', 'success');
           const whatsappMessage = generateWhatsAppMessage(orderId, cart, finalTotal, deliveryCharge, deliveryForm);
-          window.open(`https://wa.me/918901346287?text=${encodeURIComponent(whatsappMessage)}`, '_blank');
+          window.open(`https://wa.me/919050054177?text=${encodeURIComponent(whatsappMessage)}`, '_blank');
         } else {
           showToast('✅ Order placed successfully! Cash on delivery selected.', 'success');
         }
@@ -1859,10 +2032,10 @@ Amount: ₹${total}
   };
 
   const fetchProducts = async () => {
-    setLoading(true);
+    const cachedProducts = getCachedProducts();
+    setLoading(cachedProducts.length === 0);
     try {
       if (!isSupabaseConfigured) {
-        setProducts([]);
         showToast('Add Supabase URL and anon key to load products', 'error');
         return;
       }
@@ -1874,13 +2047,20 @@ Amount: ₹${total}
 
       const productsData = (data || []).map((product) => ({
         ...product,
-        _id: product._id || product.id
+        _id: product._id || product.id,
+        originalPrice: Number(product.originalPrice ?? product.original_price ?? product.originalPrice ?? 0),
+        discountPercent: Number(product.discountPercent ?? product.discount_percent ?? 0),
+        price: Number(
+          product.price ??
+          (Number(product.original_price ?? product.originalPrice ?? 0) *
+            (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100))
+        )
       }));
       setProducts(productsData);
+      localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(productsData));
     } catch (err) {
       console.error('Error fetching products:', err);
       showToast('Failed to load products from Supabase', 'error');
-      setProducts([]);
     } finally {
       setLoading(false);
     }
@@ -1939,11 +2119,6 @@ Amount: ₹${total}
       setIsAuthModalOpen(true);
     }
   }, [location.search]);
-
-  useEffect(() => {
-    setUserAuthMode('login');
-    setIsAuthModalOpen(true);
-  }, []);
 
   useEffect(() => {
     const handler = (event) => {
@@ -2094,6 +2269,12 @@ Amount: ₹${total}
         setIsUserLoggedIn(true);
         localStorage.setItem('atelimarket_user', JSON.stringify(userData));
         localStorage.setItem('atelimarket_user_token', res.data.token);
+        if (userData.role === 'admin') {
+          setIsAdminLoggedIn(true);
+          localStorage.setItem('atelimarket_admin', 'true');
+          localStorage.setItem('atelimarket_token', res.data.token);
+          navigate('/admin');
+        }
         setUserEmail('');
         setUserPassword('');
         setIsAuthModalOpen(false);
@@ -2111,8 +2292,11 @@ Amount: ₹${total}
   const handleUserLogout = () => {
     setIsUserLoggedIn(false);
     setCurrentUser(null);
+    setIsAdminLoggedIn(false);
     localStorage.removeItem('atelimarket_user');
     localStorage.removeItem('atelimarket_user_token');
+    localStorage.removeItem('atelimarket_token');
+    localStorage.removeItem('atelimarket_admin');
     showToast('👋 Logged out', 'info');
   };
 
@@ -2139,6 +2323,7 @@ Amount: ₹${total}
         setShowAdminAuth(false);
         setLoginEmail('');
         setLoginPassword('');
+        navigate('/admin');
         showToast('🚀 Welcome Admin!', 'success');
       }
     } catch (err) {
@@ -2250,20 +2435,18 @@ Amount: ₹${total}
 
     setLoading(true);
     try {
-      if (!(await requireSupabaseAdmin())) {
-        showToast('Supabase admin authentication required', 'error');
-        return;
-      }
-      const { data, error } = await supabase
-        .from('products')
-        .insert([productData])
-        .select()
-        .single();
+      const token = localStorage.getItem('atelimarket_token');
+      const res = await axios.post(`${API_URL}/products/add`, productData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
 
-      if (error) throw error;
-      if (data) {
-        const savedProduct = { ...data, _id: data._id || data.id };
-        setProducts([savedProduct, ...products]);
+      if (res.data.success) {
+        const savedProduct = { ...res.data.product, _id: res.data.product._id || res.data.product.id };
+        setProducts(currentProducts => {
+          const updatedProducts = [savedProduct, ...currentProducts];
+          localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(updatedProducts));
+          return updatedProducts;
+        });
         setNewProdName('');
         setNewProdOriginalPrice('');
         setNewProdDiscount('0');
@@ -2295,17 +2478,15 @@ Amount: ₹${total}
     if (window.confirm('Delete this product?')) {
       setLoading(true);
       try {
-        if (!(await requireSupabaseAdmin())) {
-          showToast('Supabase admin authentication required', 'error');
-          return;
-        }
-        const { error } = await supabase
-          .from('products')
-          .delete()
-          .or(`_id.eq.${id},id.eq.${id}`);
-
-        if (error) throw error;
-        setProducts(products.filter(p => p._id !== id));
+        const token = localStorage.getItem('atelimarket_token');
+        await axios.delete(`${API_URL}/products/delete/${id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setProducts(currentProducts => {
+          const updatedProducts = currentProducts.filter(p => p._id !== id);
+          localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(updatedProducts));
+          return updatedProducts;
+        });
         setCart(cart.filter(item => item._id !== id));
         showToast('🗑️ Product deleted', 'success');
       } catch (err) {
@@ -2418,7 +2599,7 @@ Amount: ₹${total}
           </a>
         </div>
       </div>
-      <header className="sticky top-[30px] z-40 bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
+      <header className="velqra-main-header sticky top-[30px] z-[70] bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className={`flex items-center gap-3 sm:gap-5 ${location.pathname === '/' ? 'pl-12 sm:pl-0' : ''}`}>
           {location.pathname !== '/' && (
             <button type="button" onClick={() => navigate(-1)} className="grid h-9 w-9 place-items-center text-neutral-900" aria-label="Go back">
@@ -2428,8 +2609,8 @@ Amount: ₹${total}
             </button>
           )}
           <Link to="/" className="flex items-center gap-2" aria-label="VELQRA home">
-            <img src={logo} alt="VELQRA" className="h-9 w-auto object-contain sm:h-11" />
-            <span className="font-serif text-xl font-bold tracking-[0.08em] text-[#173b32] sm:text-2xl">
+            <img src={velqraLogo} alt="" className="header-brand-image" />
+            <span className="font-serif text-xl font-bold tracking-[0.08em] text-[#173b32] sm:text-2xl" aria-label="VELQRA">
               VELQRA<sup className="ml-0.5 text-[8px] font-normal text-[#d4af37]">™</sup>
             </span>
           </Link>
@@ -2670,7 +2851,7 @@ Amount: ₹${total}
                           <p className="font-serif text-2xl">No products available</p>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-4">
+                        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4">
                           {filteredProducts.map(product => {
                             const price = Number(product.price || 0);
                             const originalPrice = Number(product.originalPrice || price);
@@ -2709,13 +2890,16 @@ Amount: ₹${total}
           <Route path="/shipping-policy" element={<PolicyPage policy="shipping" />} />
           <Route path="/contact-policy" element={<PolicyPage policy="contact" />} />
           <Route path="/auth" element={<Navigate to="/" />} />
+          <Route path="/admin/login" element={
+            isAdminLoggedIn ? <Navigate to="/admin" replace /> : <main className="min-h-[50vh]" />
+          } />
 
           <Route path="/orders" element={<OrdersPage setIsAuthModalOpen={setIsAuthModalOpen} setUserAuthMode={setUserAuthMode} />} />
           <Route path="/orders/track/:orderId" element={<OrderTracking />} />
 
           <Route path="/admin" element={
             isAdminLoggedIn ? (
-              <main className="container mx-auto max-w-6xl px-4 py-8 space-y-8">
+              <main className="velqra-admin-shell container mx-auto max-w-6xl px-4 py-8 space-y-8 text-slate-900">
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between border-b border-slate-200 pb-4 gap-3">
                   <div>
                     <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
@@ -2988,86 +3172,6 @@ Amount: ₹${total}
                         />
                       </div>
 
-                      {/* Icon */}
-                      <div>
-                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Icon</label>
-                        <select
-                          value={newProdIcon}
-                          onChange={(e) => setNewProdIcon(e.target.value)}
-                          className="w-full bg-slate-50 border border-slate-200 px-3 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                        >
-                          <option value="📦">📦 Box</option>
-                          <option value="🥛">🥛 Dairy</option>
-                          <option value="🍞">🍞 Bakery</option>
-                          <option value="🥦">🥦 Vegetable</option>
-                          <option value="🍎">🍎 Fruit</option>
-                          <option value="⚡">⚡ Tech</option>
-                          <option value="👕">👕 Fashion</option>
-                          <option value="📱">📱 Electronics</option>
-                          <option value="👔">👔 Mens</option>
-                          <option value="👗">👗 Womens</option>
-                          <option value="📚">📚 Books</option>
-                          <option value="🏠">🏠 Home & Kitchen</option>
-                          <option value="🏅">🏅 Sports</option>
-                          <option value="💊">💊 Medicine</option>
-                        </select>
-                      </div>
-
-                      {/* Attributes */}
-                      <div className="border-t border-slate-200 pt-4 mt-2">
-                        <label className="block text-xs font-bold uppercase text-slate-400 mb-2">
-                          🎯 Product Attributes (Optional)
-                        </label>
-                        <p className="text-[10px] text-slate-400 mb-2">
-                          Add attributes like Color, Size, Storage, RAM, Processor, Fit, Fabric, etc.
-                        </p>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            value={newAttrKey}
-                            onChange={(e) => setNewAttrKey(e.target.value)}
-                            placeholder="Attribute Name (e.g., Color)"
-                            className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
-                          />
-                          <input
-                            type="text"
-                            value={newAttrValues}
-                            onChange={(e) => setNewAttrValues(e.target.value)}
-                            placeholder="Values (e.g., Black, White, Blue)"
-                            className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={addAttribute}
-                          className="w-full mt-2 bg-[#0B3C5D]/10 text-[#0B3C5D] font-bold py-1.5 rounded-lg text-xs hover:bg-[#0B3C5D]/20 transition"
-                        >
-                          ➕ Add Attribute
-                        </button>
-
-                        {Object.keys(newProdAttributes).length > 0 && (
-                          <div className="mt-3 space-y-1">
-                            <p className="text-[10px] font-bold text-slate-500">Added Attributes:</p>
-                            {Object.entries(newProdAttributes).map(([key, values]) => (
-                              <div key={key} className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
-                                <div>
-                                  <span className="text-xs font-bold text-slate-700">{key}:</span>
-                                  <span className="text-xs text-slate-500 ml-1">{values.join(', ')}</span>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => removeAttribute(key)}
-                                  className="text-red-400 hover:text-red-600 text-xs font-bold"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
                       <button
                         type="submit"
                         disabled={loading}
@@ -3246,19 +3350,7 @@ Amount: ₹${total}
                 </div>
               </main>
             ) : (
-              <div className="text-center py-32">
-                <div className="text-6xl mb-4">🔒</div>
-                <p className="font-bold text-red-500 text-sm">Access Denied!</p>
-                <button
-                  onClick={() => {
-                    setShowAdminAuth(true);
-                    setAdminAuthMode('login');
-                  }}
-                  className="mt-4 bg-[#0B3C5D] text-white font-bold px-6 py-2 rounded-xl text-xs hover:bg-[#07263b] transition"
-                >
-                  👑 Admin Login
-                </button>
-              </div>
+              <Navigate to="/admin/login" replace />
             )
           } />
         </Routes>
@@ -3287,11 +3379,8 @@ Amount: ₹${total}
               ✕
             </button>
 
-            <div className="mb-5 flex items-center justify-center gap-2" aria-label="VELQRA">
-              <img src={logo} alt="" className="h-12 w-auto object-contain" />
-              <span className="font-serif text-2xl font-bold tracking-[0.08em] text-[#173b32]">
-                VELQRA<sup className="ml-0.5 text-[9px] font-normal text-[#d4af37]">™</sup>
-              </span>
+            <div className="mb-5 flex items-center justify-center" aria-label="VELQRA">
+              <img src={velqraLogo} alt="VELQRA" className="h-16 w-16 object-contain" />
             </div>
 
             {userAuthMode === 'login' ? (
@@ -3556,29 +3645,14 @@ Amount: ₹${total}
             <div className="flex items-center gap-3 mb-1">
               <span className="text-2xl">👑</span>
               <h3 className="text-lg font-black text-[#0B3C5D]">
-                {adminAuthMode === 'login' ? 'Admin Login' : 'Admin Register'}
+                Admin Login
               </h3>
             </div>
             <p className="text-[11px] text-slate-400 mb-4">
-              {adminAuthMode === 'login'
-                ? 'Enter credentials to access admin panel'
-                : 'Create your admin account to manage the store'}
+              Enter your admin credentials to access the admin panel
             </p>
 
-            <form onSubmit={adminAuthMode === 'login' ? handleAdminLogin : handleAdminRegister} className="space-y-3.5">
-              {adminAuthMode === 'register' && (
-                <div>
-                  <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Full Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={registerName}
-                    onChange={(e) => setRegisterName(e.target.value)}
-                    placeholder="John Doe"
-                    className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-xs focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
-                  />
-                </div>
-              )}
+            <form onSubmit={handleAdminLogin} className="space-y-3.5">
               <div>
                 <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Email</label>
                 <input
@@ -3606,20 +3680,9 @@ Amount: ₹${total}
                 disabled={loading}
                 className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider hover:bg-[#07263b] transition disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {loading ? '⏳ Processing...' : adminAuthMode === 'login' ? '🔑 Login' : '📝 Register'}
+                {loading ? '⏳ Processing...' : '🔑 Login'}
               </button>
             </form>
-
-            <div className="mt-4 text-center">
-              <button
-                onClick={() => setAdminAuthMode(adminAuthMode === 'login' ? 'register' : 'login')}
-                className="text-[10px] text-[#0B3C5D] font-bold hover:underline"
-              >
-                {adminAuthMode === 'login'
-                  ? "Don't have an admin account? Register"
-                  : '← Back to Login'}
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -3636,7 +3699,7 @@ Amount: ₹${total}
           >
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-                <h2 className="text-lg font-black text-[#0B3C5D]">🛒 Cart</h2>
+                <h2 className="relative top-1 text-lg font-black text-[#0B3C5D]">🛒 Cart</h2>
                 <button onClick={() => setIsCartOpen(false)} className="text-gray-400 hover:text-black font-bold text-lg">
                   ✕
                 </button>
@@ -3836,18 +3899,18 @@ Amount: ₹${total}
                           <div className="rounded-xl border border-dashed border-[#25D366] bg-white p-3 text-center">
                             <p className="text-[10px] font-bold uppercase text-slate-400">Pay via WhatsApp UPI</p>
                             <img
-                              src={`https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl=upi://pay?pa=8901346287@fam&pn=AteliMarket&am=${grandTotal}&cu=INR&tn=AteliMarket%20Order`}
+                              src={`https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl=upi://pay?pa=9050054177@fam&pn=VELQRA&am=${grandTotal}&cu=INR&tn=VELQRA%20Order`}
                               alt="WhatsApp UPI QR"
                               className="mx-auto my-2 w-36 h-36"
                               onError={(e) => {
                                 e.target.onerror = null;
-                                e.target.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=8901346287@fam&am=${grandTotal}&cu=INR`;
+                                e.target.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=9050054177@fam&am=${grandTotal}&cu=INR`;
                               }}
                             />
 
                             <div className="bg-green-50 rounded-lg p-3 border border-green-100">
                               <p className="text-xs font-bold text-[#25D366]">📱 WhatsApp Number</p>
-                              <p className="text-sm font-black text-slate-800">8901346287</p>
+                              <p className="text-sm font-black text-slate-800">9050054177</p>
                               <p className="text-[10px] text-slate-500 mt-1">
                                 Send ₹{grandTotal} to this WhatsApp UPI ID
                               </p>
@@ -3858,7 +3921,7 @@ Amount: ₹${total}
                               onClick={() => {
                                 const tempOrderId = 'ORDER-' + Date.now().toString(36).toUpperCase();
                                 const message = generateWhatsAppMessage(tempOrderId, cart, grandTotal, deliveryCharge, deliveryForm);
-                                window.open(`https://wa.me/918901346287?text=${encodeURIComponent(message)}`, '_blank');
+                                window.open(`https://wa.me/919050054177?text=${encodeURIComponent(message)}`, '_blank');
                               }}
                               className="w-full bg-gradient-to-r from-[#25D366] to-[#128C7E] text-white font-bold py-3 rounded-xl text-sm hover:from-[#128C7E] hover:to-[#075E54] transition text-center flex items-center justify-center gap-2 shadow-md mt-3"
                             >
@@ -3915,10 +3978,10 @@ Amount: ₹${total}
 
       {/* FOOTER */}
       <footer className="border-t border-neutral-800 bg-neutral-950 py-12 px-6 mt-20">
-        <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-8">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-5">
           <div>
             <Link to="/" aria-label="VELQRA home" className="mb-3 flex items-center gap-2">
-              <img src={logo} alt="VELQRA" className="h-12 w-auto max-w-[150px] object-contain object-left" />
+              <img src={velqraLogo} alt="" className="header-brand-image" />
               <span className="font-serif text-xl font-bold tracking-[0.08em] text-[#173b32]">
                 VELQRA<sup className="ml-0.5 text-[8px] font-normal text-[#d4af37]">™</sup>
               </span>
@@ -3928,35 +3991,70 @@ Amount: ₹${total}
           <div>
             <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">LEGAL & POLICIES</h5>
             <ul className="space-y-2 text-xs text-neutral-400">
-              {['Shipping', 'Privacy', 'Terms', 'Returns'].map((label) => (
-                <li key={label}><button onClick={() => setActivePolicy(label)} className="hover:text-amber-400">{label === 'Terms' ? 'Terms of Service' : `${label} Policy`}</button></li>
+              {[
+                ['Shipping Policy', '/shipping-policy'],
+                ['Privacy Policy', '/privacy-policy'],
+                ['Terms & Conditions', '/terms-policy'],
+                ['Returns & Refund Policy', '/return-refund-policy'],
+                ['Contact Policy', '/contact-policy'],
+                ['About Us', '/about']
+              ].map(([label, path]) => (
+                <li key={path}>
+                  <Link to={path} className="hover:text-amber-400">{label}</Link>
+                </li>
               ))}
             </ul>
           </div>
           <div>
             <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">SUPPORT</h5>
-            <p className="text-xs text-neutral-400">support@velqra.com</p>
-            <p className="text-xs text-neutral-400 mt-1">+91 1800-VELQRA-CARE</p>
+            <a href="mailto:officialvelqra@gmail.com" className="break-all text-xs text-neutral-400 hover:text-amber-400">
+              officialvelqra@gmail.com
+            </a>
+            <a href="tel:+919050054177" className="mt-2 block text-xs text-neutral-400 hover:text-amber-400">
+              +91 90500 54177
+            </a>
+          </div>
+          <div>
+            <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">LOCATION</h5>
+            <p className="mb-3 text-xs leading-relaxed text-neutral-400">
+              Near Priyanka Dhaba, Balaji Hospital, Ward No. 11, Ateli Mandi, Mahendragarh, Haryana
+            </p>
+            <iframe
+              title="VELQRA store location"
+              src="https://www.google.com/maps?q=28.1038478,76.2499368&z=19&output=embed"
+              className="h-36 w-full rounded-lg border border-neutral-800"
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              allowFullScreen
+            />
           </div>
           <div>
             <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">SOCIAL</h5>
-            <p className="text-xs text-neutral-400">@officialvelqra</p>
+            <div className="flex items-center gap-3">
+              <a href="https://www.instagram.com/officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on Instagram" className="flex h-9 w-9 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 transition hover:border-[#d4af37] hover:text-[#d4af37]">
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="5" />
+                  <circle cx="12" cy="12" r="4" />
+                  <circle cx="17.2" cy="6.8" r="1.2" fill="currentColor" stroke="none" />
+                </svg>
+              </a>
+              <a href="https://www.facebook.com/officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on Facebook" className="flex h-9 w-9 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 transition hover:border-[#d4af37] hover:text-[#d4af37]">
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true">
+                  <path d="M13.7 21v-8h2.7l.4-3h-3.1V8.1c0-.9.2-1.5 1.6-1.5h1.7V3.9c-.3 0-1.3-.1-2.5-.1-2.5 0-4.2 1.5-4.2 4.3V10H7.6v3h2.7v8h3.4z" />
+                </svg>
+              </a>
+              <a href="https://www.youtube.com/@officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on YouTube" className="flex h-9 w-9 items-center justify-center rounded-full border border-neutral-700 text-neutral-300 transition hover:border-[#d4af37] hover:text-[#d4af37]">
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true">
+                  <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8zM9.6 15.6V8.4l6.2 3.6-6.2 3.6z" />
+                </svg>
+              </a>
+            </div>
           </div>
         </div>
         <div className="max-w-6xl mx-auto border-t border-neutral-900 mt-8 pt-6 text-center text-[11px] text-neutral-600">
-          © {new Date().getFullYear()} VELQRA. All Rights Reserved.
-        </div>
-      </footer>
-      {activePolicy && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setActivePolicy(null)} />
-          <div className="relative bg-neutral-900 border border-neutral-800 p-6 rounded-2xl max-w-lg w-full z-10">
-            <h3 className="text-lg font-bold text-amber-400 mb-2">{activePolicy} Policy</h3>
-            <p className="text-xs text-neutral-300 leading-relaxed">Standard VELQRA operational guidelines apply. Fast 3-5 day dispatch nationwide with full tracking support.</p>
-            <button onClick={() => setActivePolicy(null)} className="mt-4 bg-amber-400 text-black font-bold text-xs px-4 py-2 rounded-lg hover:bg-amber-500">Close</button>
+            © {new Date().getFullYear()} VELQRA. All Rights Reserved.
           </div>
-        </div>
-      )}
+        </footer>
     </div>
   );
 }

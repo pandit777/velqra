@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import logo from '../assets/logo.png';
+import velqraLogo from '../assets/velqra-logo.png';
 
 export default function Header({ cartCount = 0 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -20,7 +20,6 @@ export default function Header({ cartCount = 0 }) {
           ? 'is-scrolled shadow-xl'
           : 'shadow-md'
       }`}
-      style={{ '--header-logo': `url("${logo}")` }}
     >
       <div className="site-header-inner container mx-auto px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -30,18 +29,14 @@ export default function Header({ cartCount = 0 }) {
           {/* ============================================= */}
           <a
             href="/"
-            aria-label="AteliMarket - Go to Home"
-            title="AteliMarket Home"
+            aria-label="VELQRA - Go to Home"
+            title="VELQRA Home"
             className="site-header-brand flex items-center gap-3 flex-shrink-0 group transition-transform duration-200 hover:scale-[1.02] active:scale-95"
           >
-            <img
-              src={logo}
-              alt="AteliMarket Logo"
-              className="h-10 sm:h-12 w-auto max-w-[210px] sm:max-w-[240px] object-contain block transition-opacity duration-300 group-hover:opacity-90"
-              loading="eager"
-              fetchPriority="high"
-            />
-            <span className="site-header-brand-name">VELQRA<sup className="brand-trademark" aria-label="trademark">TM</sup></span>
+            <img src={velqraLogo} alt="" className="header-brand-image" />
+            <span className="site-header-brand-name font-serif font-bold tracking-[0.08em]">
+              VELQRA<sup className="brand-trademark text-[8px] font-normal text-[#d4af37]" aria-label="trademark">™</sup>
+            </span>
           </a>
 
           {/* ============================================= */}

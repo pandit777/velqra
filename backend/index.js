@@ -42,6 +42,31 @@ if (!jwtSecret && process.env.NODE_ENV === 'production') {
   process.exit(1);
 }
 
+const requireAdmin = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const decoded = jwt.verify(token, jwtSecret);
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, role')
+      .eq('id', decoded.userId)
+      .single();
+
+    if (error || !user || user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+
+    req.adminUser = user;
+    next();
+  } catch {
+    return res.status(401).json({ success: false, message: 'Invalid admin session' });
+  }
+};
+
 // =============================================
 // SUPABASE CLIENT
 // =============================================
@@ -1128,7 +1153,7 @@ app.get('/api/products/:id', async (req, res) => {
 });
 
 // Add Product
-app.post('/api/products/add', async (req, res) => {
+app.post('/api/products/add', requireAdmin, async (req, res) => {
   try {
     console.log('📦 Adding product with URL...');
     console.log('Body:', req.body);
@@ -1264,7 +1289,7 @@ app.post('/api/products/add', async (req, res) => {
 });
 
 // Update Product
-app.put('/api/products/update/:id', async (req, res) => {
+app.put('/api/products/update/:id', requireAdmin, async (req, res) => {
   try {
     const productId = req.params.id;
     const updates = req.body;
@@ -1355,7 +1380,7 @@ app.put('/api/products/update/:id', async (req, res) => {
 });
 
 // Delete Product
-app.delete('/api/products/delete/:id', async (req, res) => {
+app.delete('/api/products/delete/:id', requireAdmin, async (req, res) => {
   try {
     const { data: product, error: fetchError } = await supabase
       .from('products')
@@ -2520,6 +2545,79 @@ app.patch('/api/orders/:id/status', async (req, res) => {
 });
 
 // User cancel order
+app.patch('/api/orders/:id/return', async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch {
+      return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .single();
+
+    if (error || !order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.user_id !== decoded.userId) {
+      return res.status(403).json({ success: false, message: 'You cannot return another customer\'s order' });
+    }
+    if (order.status !== 'Delivered') {
+      return res.status(400).json({ success: false, message: 'Only delivered orders can be returned' });
+    }
+    if ((order.payment_method || 'cod') !== 'online') {
+      return res.status(400).json({ success: false, message: 'Refundable online payment is required for a return' });
+    }
+    if (String(req.body?.orderId || '').trim() !== String(orderId)) {
+      return res.status(400).json({ success: false, message: 'Order ID does not match this order' });
+    }
+    if (req.body?.sealed !== true) {
+      return res.status(400).json({ success: false, message: 'Product must be sealed and unused to qualify for return' });
+    }
+
+    const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
+    const deliveredEntry = [...history].reverse().find((entry) => entry.status === 'Delivered');
+    const deliveredAt = new Date(deliveredEntry?.timestamp || order.updated_at || order.created_at);
+    if (Number.isNaN(deliveredAt.getTime()) || Date.now() - deliveredAt.getTime() > 7 * 24 * 60 * 60 * 1000) {
+      return res.status(400).json({ success: false, message: 'The 7-day return window has expired' });
+    }
+    if (order.status === 'Return Requested' || history.some((entry) => entry.status === 'Return Requested')) {
+      return res.status(400).json({ success: false, message: 'A return request already exists for this order' });
+    }
+
+    history.push({
+      status: 'Return Requested',
+      timestamp: new Date().toISOString(),
+      updatedBy: 'Customer',
+      details: 'Sealed package and full order ID confirmed by customer'
+    });
+
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ status: 'Return Requested', status_history: history })
+      .eq('id', orderId);
+
+    if (updateError) {
+      return res.status(500).json({ success: false, message: 'Could not submit return request' });
+    }
+
+    return res.json({ success: true, message: 'Return request submitted for verification' });
+  } catch (error) {
+    console.error('Error requesting return:', error);
+    return res.status(500).json({ success: false, message: 'Could not submit return request' });
+  }
+});
+
 app.patch('/api/orders/:id/cancel', async (req, res) => {
   try {
     const orderId = req.params.id;

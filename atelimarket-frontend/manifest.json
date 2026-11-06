@@ -1,23 +1,11 @@
 {
-  "name": "AteliMarket - Best Online Shopping Store",
-  "short_name": "AteliMarket",
-  "description": "Ateli shopping at best prices. Shop electronics, fashion, groceries & more.",
+  "name": "VELQRA Botanical Beauty & Skincare",
+  "short_name": "VELQRA",
+  "description": "Premium botanical skincare and beauty products.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#0B3C5D",
-  "icons": [
-    {
-      "src": "/logo.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "/logo.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ],
   "categories": ["shopping", "ecommerce"],
   "lang": "en",
   "dir": "ltr"
