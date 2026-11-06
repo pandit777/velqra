@@ -831,7 +831,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
                     setPromoApplied(false);
                   }}
                   placeholder="Enter promo code"
-                  className="min-w-0 flex-1 rounded-xl border border-green-200 bg-white px-3 py-2.5 text-sm font-bold uppercase outline-none focus:border-green-600"
+                  className="min-w-0 flex-1 rounded-xl border border-green-200 bg-white px-3 py-2.5 text-sm font-bold uppercase text-black caret-black placeholder:text-slate-500 outline-none focus:border-green-600"
                 />
                 <button
                   type="button"
