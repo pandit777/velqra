@@ -19,8 +19,9 @@ export default function Login() {
       
       if (data.success) {
         // Save token
-        localStorage.setItem('token', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('atelimarket_user_token', data.token);
+        localStorage.setItem('atelimarket_user', JSON.stringify(data.user));
+        window.dispatchEvent(new Event('atelimarket-auth-change'));
         
         // Redirect to home
         navigate('/');

@@ -1472,6 +1472,22 @@ export default function App() {
   });
   const [userAuthMode, setUserAuthMode] = useState('login');
 
+  useEffect(() => {
+    const syncUserAuthState = () => {
+      const savedUser = localStorage.getItem('atelimarket_user');
+      setIsUserLoggedIn(Boolean(localStorage.getItem('atelimarket_user_token')));
+      setCurrentUser(savedUser ? JSON.parse(savedUser) : null);
+    };
+
+    window.addEventListener('atelimarket-auth-change', syncUserAuthState);
+    window.addEventListener('storage', syncUserAuthState);
+
+    return () => {
+      window.removeEventListener('atelimarket-auth-change', syncUserAuthState);
+      window.removeEventListener('storage', syncUserAuthState);
+    };
+  }, []);
+
   // Registration Fields
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
@@ -1486,6 +1502,9 @@ export default function App() {
   // Login Fields
   const [userEmail, setUserEmail] = useState('');
   const [userPassword, setUserPassword] = useState('');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isMobilePoliciesOpen, setIsMobilePoliciesOpen] = useState(false);
+  const [isMobileSocialOpen, setIsMobileSocialOpen] = useState(false);
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(() => {
     return true;
@@ -1549,6 +1568,14 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const categories = ['All', 'Face Wash'];
+
+  useEffect(() => {
+    if (location.pathname !== '/') {
+      setIsMobileMenuOpen(false);
+      setIsMobilePoliciesOpen(false);
+      setIsMobileSocialOpen(false);
+    }
+  }, [location.pathname]);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -2391,8 +2418,8 @@ Amount: ₹${total}
           </a>
         </div>
       </div>
-      <header className="sticky top-0 z-40 bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3 sm:gap-5">
+      <header className="sticky top-[30px] z-40 bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
+        <div className={`flex items-center gap-3 sm:gap-5 ${location.pathname === '/' ? 'pl-12 sm:pl-0' : ''}`}>
           {location.pathname !== '/' && (
             <button type="button" onClick={() => navigate(-1)} className="grid h-9 w-9 place-items-center text-neutral-900" aria-label="Go back">
               <svg className="h-7 w-7 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="1.8">
@@ -2407,14 +2434,29 @@ Amount: ₹${total}
             </span>
           </Link>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsAuthModalOpen(true)}
-            className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
-          >
-            LOGIN
-          </button>
+        <div className="hidden items-center gap-2 md:flex">
+          {isUserLoggedIn ? (
+            <div className="flex items-center gap-2">
+              <span className="max-w-28 truncate text-xs font-bold uppercase tracking-wide text-neutral-700 sm:max-w-40">
+                {currentUser?.name || currentUser?.email || 'Account'}
+              </span>
+              <button
+                type="button"
+                onClick={handleUserLogout}
+                className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
+              >
+                LOGOUT
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsAuthModalOpen(true)}
+              className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
+            >
+              LOGIN
+            </button>
+          )}
           {isUserLoggedIn && orders.length > 0 ? (
             <Link to="/orders" className="text-xs font-bold uppercase tracking-wide text-neutral-700">Orders</Link>
           ) : null}
@@ -2443,6 +2485,147 @@ Amount: ₹${total}
             )}
           </button>
         </div>
+
+        {location.pathname === '/' && (
+          <button
+            type="button"
+            onClick={() => setIsMobileMenuOpen((open) => !open)}
+            className="absolute left-3 top-1/2 z-[45] grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-900 md:hidden"
+            aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={isMobileMenuOpen}
+          >
+            <svg className="h-5 w-5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2">
+              {isMobileMenuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+        )}
+
+        {location.pathname === '/' && isMobileMenuOpen && (
+          <>
+            <nav
+              className="absolute left-[-12px] right-[-12px] top-full z-[42] flex h-[calc(100vh-68px)] flex-col bg-[#fdfcf9] md:hidden"
+              style={{ backgroundColor: '#fdfcf9', color: '#173b32' }}
+              aria-label="Mobile navigation"
+            >
+              <div className="flex h-[72px] shrink-0 items-center justify-between border-b border-[#d9d8d2] px-6">
+                <span className="text-2xl font-semibold tracking-[0.08em] text-[#173b32]">MENU</span>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="grid h-10 w-10 place-items-center text-[#173b32]"
+                  aria-label="Close navigation menu"
+                >
+                  <svg className="h-8 w-8 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="1.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
+                {[
+                  ['Shop', '/'],
+                  ['Face Wash', '/#products'],
+                  ['Track Order', '/orders']
+                ].map(([label, to]) => (
+                  <Link
+                    key={label}
+                    to={to}
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="block border-b border-[#e1e0da] py-[18px] text-xl font-medium leading-tight text-[#173b32]"
+                  >
+                    {label}
+                  </Link>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    setIsCartOpen(true);
+                  }}
+                  className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
+                >
+                  Store{totalCartItems > 0 ? ` (${totalCartItems})` : ''}
+                </button>
+                <div className="pt-5">
+                  <button
+                    type="button"
+                    onClick={() => setIsMobilePoliciesOpen((open) => !open)}
+                    className="flex w-full items-center justify-between border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
+                    aria-expanded={isMobilePoliciesOpen}
+                  >
+                    Privacy
+                    <span className="text-base">{isMobilePoliciesOpen ? '−' : '+'}</span>
+                  </button>
+                  {isMobilePoliciesOpen && (
+                    <div className="flex flex-col py-2 text-xs text-[#777b74]">
+                      {[
+                        ['Shipping Policy', '/shipping-policy'],
+                        ['Privacy Policy', '/privacy-policy'],
+                        ['Terms & Conditions', '/terms-policy'],
+                        ['Return & Refund Policy', '/return-refund-policy'],
+                        ['Contact Policy', '/contact-policy']
+                      ].map(([label, to]) => (
+                        <Link
+                          key={to}
+                          to={to}
+                          onClick={() => {
+                            setIsMobilePoliciesOpen(false);
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className="border-b border-[#eeeae2] py-3"
+                        >
+                          {label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Link
+                  to="/contact-policy"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="block border-b border-[#e1e0da] py-[18px] text-xl font-medium leading-tight text-[#173b32]"
+                >
+                  Support Team
+                </Link>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsMobileSocialOpen((open) => !open)}
+                    className="flex w-full items-center justify-between border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium text-[#173b32]"
+                    aria-expanded={isMobileSocialOpen}
+                  >
+                    Social Contact
+                    <span className="text-base">{isMobileSocialOpen ? '−' : '+'}</span>
+                  </button>
+                  {isMobileSocialOpen && (
+                    <div className="flex flex-col text-sm text-[#777b74]">
+                      <a href="https://www.youtube.com/@officialvelqra" target="_blank" rel="noreferrer" className="border-b border-[#eeeae2] py-3">YouTube</a>
+                      <a href="https://www.instagram.com" target="_blank" rel="noreferrer" className="border-b border-[#eeeae2] py-3">Instagram</a>
+                      <a href="https://www.facebook.com" target="_blank" rel="noreferrer" className="border-b border-[#eeeae2] py-3">Facebook</a>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    if (isUserLoggedIn) {
+                      handleUserLogout();
+                    } else {
+                      setIsAuthModalOpen(true);
+                    }
+                  }}
+                  className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
+                >
+                  {isUserLoggedIn ? 'Logout' : 'Account'}
+                </button>
+              </div>
+            </nav>
+          </>
+        )}
       </header>
 
       {/* MAIN CONTENT */}
@@ -2468,7 +2651,7 @@ Amount: ₹${total}
                     </section>
                     <section className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
                       <div className="flex flex-wrap gap-3 mb-8">
-                        {['All', 'Botanical', 'Face Care', 'Skincare'].map(category => (
+                        {['All', 'Face Wash'].map(category => (
                           <button
                             key={category}
                             onClick={() => setActiveCategory(category)}

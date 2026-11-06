@@ -395,8 +395,10 @@ input:focus-visible {
 
 /* ===== HEADER ===== */
 .announcement-bar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 60;
   height: 30px;
   overflow: hidden;
@@ -507,12 +509,18 @@ input:focus-visible {
 }
 
 header {
-  position: sticky;
-  top: 0;
+  position: fixed !important;
+  top: 30px;
+  left: 0 !important;
+  right: 0 !important;
   z-index: 40;
   background: #ffffff;
   border-bottom: 1px solid #f1f5f9;
   transition: all 0.3s ease;
+}
+
+body {
+  padding-top: 104px;
 }
 
 .site-header {
