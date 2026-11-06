@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
+import { isSupabaseConfigured, requireSupabaseAdmin, supabase } from './lib/supabase';
 import logo from './assets/logo.png';
 import banner1 from './assets/banner1.png';
 import banner2 from './assets/banner2.png';
@@ -237,7 +238,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 
   return (
     <div 
-      className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      className="velqra-auth-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div 
@@ -572,7 +573,7 @@ const AboutPage = () => {
 // =============================================
 // PRODUCT DETAIL PAGE - WITH VIDEO & ATTRIBUTES
 // =============================================
-const ProductDetailPage = ({ addToCart }) => {
+const ProductDetailPage = ({ addToCart, openCart }) => {
   const { id } = useParams();
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -588,14 +589,32 @@ const ProductDetailPage = ({ addToCart }) => {
     const fetchProductDetails = async () => {
       try {
         setLoading(true);
-        const response = await axios.get(`${API_URL}/products/${id}`);
-        
-        if (response.data.success) {
-          const apiProduct = response.data.product;
+        if (!isSupabaseConfigured) {
+          throw new Error('Supabase is not configured');
+        }
+        let result = await supabase
+          .from('products')
+          .select('*')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (result.error?.code === '42703') {
+          result = await supabase
+            .from('products')
+            .select('*')
+            .eq('_id', id)
+            .maybeSingle();
+        }
+
+        const { data, error } = result;
+
+        if (error) throw error;
+        if (data) {
           const productData = {
-            ...apiProduct,
-            promoCode: apiProduct.promoCode || apiProduct.promo_code || '',
-            promoDiscount: Number(apiProduct.promoDiscount ?? apiProduct.promo_discount ?? 0)
+            ...data,
+            _id: data._id || data.id,
+            promoCode: data.promoCode || data.promo_code || '',
+            promoDiscount: Number(data.promoDiscount ?? data.promo_discount ?? 0)
           };
           setProduct(productData);
           
@@ -617,7 +636,7 @@ const ProductDetailPage = ({ addToCart }) => {
           setError('Product not found');
         }
       } catch (err) {
-        setError(err.response?.data?.message || 'Failed to fetch product');
+        setError(err.message || err.response?.data?.message || 'Failed to fetch product');
       } finally {
         setLoading(false);
       }
@@ -655,7 +674,13 @@ const ProductDetailPage = ({ addToCart }) => {
       const event = new CustomEvent('addToCart', { detail: productWithAttributes });
       window.dispatchEvent(event);
     }
-    navigate('/');
+  };
+
+  const handleBuyNow = () => {
+    handleAddToCart();
+    window.setTimeout(() => {
+      if (openCart) openCart();
+    }, 0);
   };
 
   const handleAttributeChange = (key, value) => {
@@ -709,22 +734,22 @@ const ProductDetailPage = ({ addToCart }) => {
   const promoSavings = promoApplied ? product.price - promoPrice : 0;
 
   return (
-    <div className="container mx-auto max-w-6xl px-4 py-8">
-      <nav className="text-sm text-slate-400 mb-6">
+    <div className="container mx-auto max-w-6xl px-4 py-8 overflow-x-hidden text-white">
+      <nav className="mb-6 text-sm text-slate-400 break-words">
         <Link to="/" className="hover:text-[#0B3C5D] transition">Home</Link>
         <span className="mx-2">/</span>
         <Link to={`/?category=${product.category}`} className="hover:text-[#0B3C5D] transition">{product.category}</Link>
         <span className="mx-2">/</span>
-        <span className="text-slate-700 font-medium">{product.name}</span>
+        <span className="font-medium text-slate-700 break-words">{product.name}</span>
       </nav>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="space-y-4">
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+      <div className="grid w-full grid-cols-1 gap-8 md:grid-cols-2">
+        <div className="min-w-0 space-y-4">
+          <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <img 
               src={selectedImage || mainImage} 
               alt={product.name}
-              className="w-full h-96 object-contain rounded-xl"
+              className="h-96 w-full max-w-full object-contain rounded-xl"
               onError={(e) => {
                 e.target.onerror = null;
                 e.target.src = getProductDisplayImage(product);
@@ -757,20 +782,20 @@ const ProductDetailPage = ({ addToCart }) => {
           )}
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6 break-words">
           <div>
             <span className="inline-block bg-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full mb-3">
               {product.category}
             </span>
-            <h1 className="text-3xl font-black text-slate-900 leading-tight">{product.name}</h1>
+            <h1 className="w-full break-words [overflow-wrap:anywhere] text-3xl font-black leading-tight text-white sm:text-4xl">{product.name}</h1>
             {product.brand && (
               <p className="text-sm text-slate-500 mt-1">Brand: <span className="font-medium">{product.brand}</span></p>
             )}
           </div>
 
-          <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
             <div className="flex items-baseline gap-3 flex-wrap">
-              <span className="text-3xl font-black text-[#0B3C5D]">₹{promoPrice}</span>
+              <span className="text-3xl font-black text-amber-400">₹{promoPrice}</span>
               {product.discountPercent > 0 && (
                 <>
                   <span className="text-lg text-slate-400 line-through">₹{product.originalPrice}</span>
@@ -824,6 +849,28 @@ const ProductDetailPage = ({ addToCart }) => {
             </div>
           )}
 
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              onClick={handleAddToCart}
+              disabled={product.stock <= 0}
+              className={`rounded-xl py-3.5 font-bold text-sm uppercase tracking-wide transition ${
+                product.stock > 0
+                  ? 'bg-amber-400 text-black hover:bg-amber-500 shadow-md'
+                  : 'cursor-not-allowed bg-slate-700 text-slate-400'
+              }`}
+            >
+              {product.stock > 0 ? 'Add to Cart' : 'Out of Stock'}
+            </button>
+            <button
+              type="button"
+              onClick={handleBuyNow}
+              disabled={product.stock <= 0}
+              className="rounded-xl border border-amber-400 bg-transparent py-3.5 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-amber-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Buy Now
+            </button>
+          </div>
+
           {/* ✅ ATTRIBUTES */}
           {hasAttributes && (
             <div className="bg-white rounded-2xl border border-slate-200 p-5">
@@ -833,7 +880,7 @@ const ProductDetailPage = ({ addToCart }) => {
               <div className="space-y-4">
                 {Object.entries(product.attributes).map(([key, values]) => (
                   <div key={key}>
-                    <label className="block text-xs font-bold uppercase text-slate-400 mb-1.5">
+                      <label className="mb-1.5 block break-words text-xs font-bold uppercase text-slate-400">
                       {key}
                     </label>
                     <div className="flex flex-wrap gap-2">
@@ -847,7 +894,7 @@ const ProductDetailPage = ({ addToCart }) => {
                               : 'border-slate-200 bg-white text-slate-700 hover:border-[#0B3C5D] hover:bg-slate-50'
                           }`}
                         >
-                          {value}
+                          <span className="break-words">{value}</span>
                         </button>
                       ))}
                     </div>
@@ -908,29 +955,18 @@ const ProductDetailPage = ({ addToCart }) => {
           </div>
 
           {product.description && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5">
-              <h3 className="font-bold text-sm text-slate-700 mb-2 flex items-center gap-2">
+            <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
+              <h3 className="font-bold text-sm text-white mb-2 flex items-center gap-2">
                 <span>📝</span> Description
               </h3>
-              <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
+              <p className="w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-neutral-300">
                 {product.description}
               </p>
             </div>
           )}
 
           <div className="flex gap-3">
-            <button 
-              onClick={handleAddToCart}
-              disabled={product.stock <= 0}
-              className={`flex-1 py-3.5 rounded-xl font-bold text-sm transition ${
-                product.stock > 0
-                  ? 'bg-[#FF5722] text-white hover:bg-[#e64a19] shadow-md'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              {product.stock > 0 ? '🛒 Add to Cart' : 'Out of Stock'}
-            </button>
-            <Link to="/" className="px-6 py-3.5 rounded-xl font-bold text-sm bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
+            <Link to="/" className="px-6 py-3.5 rounded-xl font-bold text-sm border border-neutral-700 text-white hover:bg-neutral-800 transition">
               ← Back
             </Link>
           </div>
@@ -1412,6 +1448,7 @@ export default function App() {
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [placingOrder, setPlacingOrder] = useState(false);
   const [error, setError] = useState('');
+  const [activePolicy, setActivePolicy] = useState(null);
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
   const [activeBanner, setActiveBanner] = useState(0);
   const banners = [banner1, banner2, banner3];
@@ -1450,7 +1487,9 @@ export default function App() {
   const [userEmail, setUserEmail] = useState('');
   const [userPassword, setUserPassword] = useState('');
 
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(() => {
+    return true;
+  });
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
@@ -1795,12 +1834,25 @@ Amount: ₹${total}
   const fetchProducts = async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/products`);
-      const productsData = res.data?.products || res.data || [];
-      setProducts(Array.isArray(productsData) ? productsData : []);
+      if (!isSupabaseConfigured) {
+        setProducts([]);
+        showToast('Add Supabase URL and anon key to load products', 'error');
+        return;
+      }
+      const { data, error } = await supabase
+        .from('products')
+        .select('*');
+
+      if (error) throw error;
+
+      const productsData = (data || []).map((product) => ({
+        ...product,
+        _id: product._id || product.id
+      }));
+      setProducts(productsData);
     } catch (err) {
       console.error('Error fetching products:', err);
-      showToast('Failed to load products', 'error');
+      showToast('Failed to load products from Supabase', 'error');
       setProducts([]);
     } finally {
       setLoading(false);
@@ -1860,6 +1912,11 @@ Amount: ₹${total}
       setIsAuthModalOpen(true);
     }
   }, [location.search]);
+
+  useEffect(() => {
+    setUserAuthMode('login');
+    setIsAuthModalOpen(true);
+  }, []);
 
   useEffect(() => {
     const handler = (event) => {
@@ -2000,7 +2057,7 @@ Amount: ₹${total}
 
     try {
       const res = await axios.post(`${AUTH_URL}/login`, {
-        email: userEmail,
+        email: userEmail.trim(),
         password: userPassword
       });
 
@@ -2166,9 +2223,20 @@ Amount: ₹${total}
 
     setLoading(true);
     try {
-      const res = await axios.post(`${API_URL}/products/add`, productData);
-      if (res.data.success) {
-        setProducts([res.data.product, ...products]);
+      if (!(await requireSupabaseAdmin())) {
+        showToast('Supabase admin authentication required', 'error');
+        return;
+      }
+      const { data, error } = await supabase
+        .from('products')
+        .insert([productData])
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        const savedProduct = { ...data, _id: data._id || data.id };
+        setProducts([savedProduct, ...products]);
         setNewProdName('');
         setNewProdOriginalPrice('');
         setNewProdDiscount('0');
@@ -2200,7 +2268,16 @@ Amount: ₹${total}
     if (window.confirm('Delete this product?')) {
       setLoading(true);
       try {
-        await axios.delete(`${API_URL}/products/delete/${id}`);
+        if (!(await requireSupabaseAdmin())) {
+          showToast('Supabase admin authentication required', 'error');
+          return;
+        }
+        const { error } = await supabase
+          .from('products')
+          .delete()
+          .or(`_id.eq.${id},id.eq.${id}`);
+
+        if (error) throw error;
         setProducts(products.filter(p => p._id !== id));
         setCart(cart.filter(item => item._id !== id));
         showToast('🗑️ Product deleted', 'success');
@@ -2270,7 +2347,7 @@ Amount: ₹${total}
   const grandTotal = Math.max(0, totalCartPrice - promoDiscountAmount) + deliveryCharge;
 
   return (
-    <div className="bg-slate-50 min-h-screen text-slate-800 font-sans antialiased flex flex-col">
+    <div className="velqra-storefront min-h-screen text-neutral-100 font-sans antialiased flex flex-col">
 
       {toast.show && (
         <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-xl shadow-lg text-white font-bold text-sm transition-all ${
@@ -2281,110 +2358,90 @@ Amount: ₹${total}
         </div>
       )}
 
-      {/* HEADER */}
       <div className="announcement-bar" role="region" aria-label="VELQRA announcement">
         <div className="announcement-track">
-          <div className="announcement-content">
-          <span>START SHOPPING WITH VELQRA</span>
-          <span className="announcement-star">✦</span>
-          <strong>BUY NOW</strong>
-          <span className="announcement-star">✦</span>
-          <span>PREMIUM QUALITY. EVERYDAY VALUE.</span>
-          <span className="announcement-star">✦</span>
-          </div>
-          <div className="announcement-content" aria-hidden="true">
-          <span>START SHOPPING WITH VELQRA</span>
-          <span className="announcement-star">✦</span>
-          <strong>BUY NOW</strong>
-          <span className="announcement-star">✦</span>
-          <span>PREMIUM QUALITY. EVERYDAY VALUE.</span>
-          <span className="announcement-star">✦</span>
-          </div>
+          {Array.from({ length: 2 }).map((_, copy) => (
+            <div key={copy} className="announcement-content" aria-hidden={copy === 1}>
+              <span>START SHOPPING WITH VELQRA</span>
+              <span className="announcement-star">✦</span>
+              <strong>BUY NOW</strong>
+              <span className="announcement-star">✦</span>
+              <span>PREMIUM QUALITY. EVERYDAY VALUE.</span>
+              <span className="announcement-star">✦</span>
+            </div>
+          ))}
+        </div>
+        <div className="announcement-socials">
+          <a href="https://www.instagram.com/officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on Instagram" title="Instagram @officialvelqra">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" strokeWidth="2" />
+              <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" strokeWidth="2" />
+              <circle cx="17.2" cy="6.8" r="1.2" fill="currentColor" />
+            </svg>
+          </a>
+          <a href="https://www.facebook.com/officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on Facebook" title="Facebook @officialvelqra">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M13.7 21v-8h2.7l.4-3h-3.1V8.1c0-.9.2-1.5 1.6-1.5h1.7V3.9c-.3 0-1.3-.1-2.5-.1-2.5 0-4.2 1.5-4.2 4.3V10H7.6v3h2.7v8h3.4z" />
+            </svg>
+          </a>
+          <a href="https://www.youtube.com/@officialvelqra" target="_blank" rel="noreferrer" aria-label="VELQRA on YouTube" title="YouTube @officialvelqra">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.6 12 3.6 12 3.6s-7.5 0-9.4.5A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.5 9.4.5 9.4.5s7.5 0 9.4-.5a3 3 0 0 0 2.1-2.1A31 31 0 0 0 24 12a31 31 0 0 0-.5-5.8zM9.6 15.6V8.4l6.2 3.6-6.2 3.6z" />
+            </svg>
+          </a>
         </div>
       </div>
-      <header
-        className={`site-header sticky top-0 z-40 transition-all duration-300 ${
-          isHeaderScrolled
-            ? 'is-scrolled shadow-xl'
-            : 'shadow-md'
-        }`}
-        style={{ '--header-logo': `url("${logo}")` }}
-      >
-        <div className="site-header-inner container mx-auto px-4 py-3 flex flex-col md:flex-row items-center justify-between gap-3">
-          <div className="flex items-center justify-between w-full md:w-auto">
-            <Link to="/" className="site-header-brand flex items-center gap-3 hover:opacity-90 transition" aria-label="AteliMarket home">
-              <img
-                src={logo}
-                alt="AteliMarket"
-                className="h-10 sm:h-12 w-auto max-w-[210px] sm:max-w-[240px] object-contain block"
-              />
-              <span className="site-header-brand-name">VELQRA<sup className="brand-trademark" aria-label="trademark">TM</sup></span>
-            </Link>
-
-            <div className="flex items-center gap-2 md:hidden">
-              <button onClick={() => setIsCartOpen(true)} className="relative p-2 bg-white rounded-full hover:bg-slate-100 transition text-[#0B3C5D]">
-                <span className="absolute -top-1 -right-1 bg-[#FF5722] text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                  {totalCartItems}
-                </span>
-                🛒
-              </button>
-            </div>
-          </div>
-
-          <div className="w-full md:w-1/2">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="🔍 Search products..."
-              className="header-search w-full px-5 py-2.5 rounded-full text-slate-700 placeholder:text-slate-400 text-sm transition-all"
-            />
-          </div>
-
-          <nav className="flex items-center gap-2 flex-wrap justify-center">
-            <div className="flex items-center gap-2">
-              {isUserLoggedIn ? (
-                <>
-                  <Link to="/orders"                   className="header-action text-xs font-bold px-3 py-2 text-[#0B3C5D] rounded-xl transition whitespace-nowrap">
-                    📦 Orders
-                    {pendingPaymentOrders.length > 0 && (
-                      <span className="ml-1 bg-yellow-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">
-                        {pendingPaymentOrders.length}
-                      </span>
-                    )}
-                  </Link>
-                  <button
-                    onClick={handleUserLogout}
-                    className="header-action header-action-muted text-xs font-bold px-3 py-2 text-slate-700 rounded-xl transition whitespace-nowrap"
-                  >
-                    Logout
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => {
-                    setUserAuthMode('login');
-                    setRegStep('form');
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="header-action header-login text-xs font-bold px-4 py-2 text-[#0B3C5D] rounded-xl transition whitespace-nowrap flex items-center gap-2"
-                >
-                  <span>👤</span> Login / Sign Up
-                </button>
-              )}
-            </div>
-
-            <div className="hidden md:flex items-center">
-              <button onClick={() => setIsCartOpen(true)} className="header-cart-button relative p-2.5 rounded-full transition cursor-pointer">
-                <span className="absolute -top-1 -right-1 bg-[#FF5722] text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center border-2 border-white">
-                  {totalCartItems}
-                </span>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/>
-                </svg>
-              </button>
-            </div>
-          </nav>
+      <header className="sticky top-0 z-40 bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3 sm:gap-5">
+          {location.pathname !== '/' && (
+            <button type="button" onClick={() => navigate(-1)} className="grid h-9 w-9 place-items-center text-neutral-900" aria-label="Go back">
+              <svg className="h-7 w-7 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="1.8">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          )}
+          <Link to="/" className="flex items-center gap-2" aria-label="VELQRA home">
+            <img src={logo} alt="VELQRA" className="h-9 w-auto object-contain sm:h-11" />
+            <span className="font-serif text-xl font-bold tracking-[0.08em] text-[#173b32] sm:text-2xl">
+              VELQRA<sup className="ml-0.5 text-[8px] font-normal text-[#d4af37]">™</sup>
+            </span>
+          </Link>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsAuthModalOpen(true)}
+            className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
+          >
+            LOGIN
+          </button>
+          {isUserLoggedIn && orders.length > 0 ? (
+            <Link to="/orders" className="text-xs font-bold uppercase tracking-wide text-neutral-700">Orders</Link>
+          ) : null}
+          {totalCartItems > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsCartOpen(true)}
+              className="hidden text-xs font-bold uppercase tracking-wide text-[#173b32] sm:inline"
+            >
+              ORDER
+            </button>
+          )}
+          <button
+            onClick={() => setIsCartOpen(true)}
+            className="relative flex items-center gap-2 bg-neutral-900 border border-neutral-700 px-4 py-2 rounded-full hover:border-amber-400 transition"
+            aria-label="Open shopping bag"
+          >
+            <svg className="w-5 h-5 stroke-current text-amber-400 fill-none" viewBox="0 0 24 24" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+            </svg>
+            <span className="text-sm font-medium">BAG</span>
+            {totalCartItems > 0 && (
+              <span className="bg-amber-400 text-black text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
+                {totalCartItems}
+              </span>
+            )}
+          </button>
         </div>
       </header>
 
@@ -2393,142 +2450,75 @@ Amount: ₹${total}
         <Routes>
           <Route path="/" element={
             <>
-              <section
-                className="banner-carousel relative isolate h-[260px] sm:h-[320px] md:h-[390px] lg:h-[430px] overflow-hidden border-b border-[#dbe6e0] bg-[#071d2b]"
-              >
-                <img
-                  key={banners[activeBanner]}
-                  src={banners[activeBanner]}
-                  alt={`VELORA featured banner ${activeBanner + 1}`}
-                  className="absolute inset-0 h-full w-full object-cover object-center animate-bannerFade"
-                  loading={activeBanner === 0 ? 'eager' : 'lazy'}
-                />
-                <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#071d2b]/70 px-3 py-2 backdrop-blur-md shadow-lg">
-                  {banners.map((_, index) => (
-                    <button
-                      key={index}
-                      type="button"
-                      onClick={() => setActiveBanner(index)}
-                      aria-label={`Show banner ${index + 1}`}
-                      className={`h-2 rounded-full transition-all ${activeBanner === index ? 'w-7 bg-[#d9b45b]' : 'w-2 bg-white/60 hover:bg-white'}`}
-                    />
-                  ))}
-                </div>
-              </section>
-
-              <main className="container mx-auto px-4 py-6 space-y-6">
-                <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-                  {categories.map(cat => (
-                    <button
-                      key={cat}
-                      onClick={() => setActiveCategory(cat)}
-                      className={`px-5 py-2.5 rounded-full text-xs font-bold transition border whitespace-nowrap cursor-pointer ${
-                        activeCategory === cat
-                          ? 'bg-[#0B3C5D] text-white border-transparent shadow-md'
-                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                      }`}
+              {(() => {
+                return (
+                  <main className="bg-[#f1f1ef] text-[#171717]">
+                    <section
+                      className="velqra-home-hero"
+                      style={{
+                        backgroundImage: `linear-gradient(90deg, rgba(8, 8, 8, 0.88) 0%, rgba(8, 8, 8, 0.62) 48%, rgba(8, 8, 8, 0.18) 100%), url(${banner1})`,
+                        backgroundPosition: '100% center'
+                      }}
                     >
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-extrabold text-slate-800">
-                      {searchQuery ? `🔍 "${searchQuery}"` : activeCategory}
-                    </h2>
-                    <span className="text-xs text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-200">
-                      {filteredProducts.length} items
-                    </span>
-                  </div>
-
-                  {loading ? (
-                    <div className="flex justify-center py-12">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#0B3C5D]"></div>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                      {filteredProducts.length === 0 ? (
-                        <div className="col-span-full text-center py-16">
-                          <div className="text-6xl mb-3">🛍️</div>
-                          <p className="text-slate-400 text-sm font-medium">No products found</p>
+                      <div>
+                        <p>PURE BOTANICAL SCIENCE</p>
+                        <h1>VELQRA BOTANICAL<br />COLLECTION</h1>
+                        <span>Pure Botanicals Science for Radiant &amp; Healthy Skin</span>
+                      </div>
+                    </section>
+                    <section className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
+                      <div className="flex flex-wrap gap-3 mb-8">
+                        {['All', 'Botanical', 'Face Care', 'Skincare'].map(category => (
+                          <button
+                            key={category}
+                            onClick={() => setActiveCategory(category)}
+                            className={`rounded-sm px-7 py-3 text-xs font-bold uppercase tracking-widest transition ${
+                              activeCategory === category ? 'bg-[#173b32] text-white' : 'border border-[#d9d9d4] bg-white text-[#323232] hover:border-[#173b32]'
+                            }`}
+                          >
+                            {category}
+                          </button>
+                        ))}
+                      </div>
+                      {loading ? (
+                        <div className="py-20 text-center text-sm font-bold uppercase tracking-widest">Loading products...</div>
+                      ) : filteredProducts.length === 0 ? (
+                        <div className="rounded-lg border border-neutral-200 bg-white py-16 text-center">
+                          <p className="font-serif text-2xl">No products available</p>
                         </div>
                       ) : (
-                        filteredProducts.map((product) => {
-                          const imageUrl = getProductDisplayImage(product);
-                          return (
-                            <Link
-                              key={product._id}
-                              to={`/product/${product._id}`}
-                              className="group bg-white rounded-2xl border border-slate-100 flex flex-col justify-between p-4 shadow-sm hover:shadow-lg transition-all duration-300 hover:-translate-y-1 cursor-pointer"
-                            >
-                              <div>
-                                <div className="h-24 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl flex items-center justify-center overflow-hidden mb-3 group-hover:scale-105 transition-transform relative">
-                                  <img
-                                    src={imageUrl}
-                                    alt={product.name}
-                                    className="w-full h-full object-contain bg-white p-1"
-                                    loading="lazy"
-                                    onError={(e) => {
-                                      e.target.onerror = null;
-                                      e.target.src = getProductDisplayImage(product);
-                                    }}
-                                  />
-                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition flex items-center justify-center">
-                                    <span className="bg-white/90 text-[#0B3C5D] text-[10px] font-bold px-3 py-1 rounded-full opacity-0 group-hover:opacity-100 transition">
-                                      👁️ View
-                                    </span>
+                        <div className="grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-4">
+                          {filteredProducts.map(product => {
+                            const price = Number(product.price || 0);
+                            const originalPrice = Number(product.originalPrice || price);
+                            const discount = Number(product.discountPercent || 0);
+                            return (
+                              <Link key={product._id} to={`/product/${product._id}`} className="velqra-product-grid-card group">
+                                <div className="relative">
+                                  {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
+                                  <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
+                                </div>
+                                <div className="p-3 sm:p-5">
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8a8a82]">{product.category || 'Botanical'}</p>
+                                  <h2 className="mt-2 min-h-[44px] font-serif text-base sm:text-xl leading-tight text-[#1d1d1b]">{product.name}</h2>
+                                  <div className="mt-4 flex items-baseline gap-2">
+                                    <strong className="text-base sm:text-lg text-[#173b32]">₹{price}</strong>
+                                    {originalPrice > price && <span className="text-xs text-[#999] line-through">₹{originalPrice}</span>}
                                   </div>
                                 </div>
-                                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase block">
-                                  {product.category}
-                                </span>
-                                <h3 className="font-bold text-xs text-slate-800 line-clamp-2 min-h-[32px] mt-0.5 leading-tight">
-                                  {product.name}
-                                </h3>
-                              </div>
-
-                              <div className="mt-3 flex flex-col pt-2 border-t border-slate-50">
-                                <div className="flex items-baseline gap-1.5 flex-wrap">
-                                  <span className="font-black text-sm text-[#0B3C5D]">₹{product.price}</span>
-                                  {product.discountPercent > 0 && (
-                                    <>
-                                      <span className="text-[10px] text-slate-400 line-through">₹{product.originalPrice}</span>
-                                      <span className="text-[9px] font-extrabold text-green-600 bg-green-50 px-1.5 py-0.5 rounded">
-                                        -{product.discountPercent}%
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                                <button
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    addToCart(product);
-                                  }}
-                                  disabled={product.stock <= 0}
-                                  className={`w-full mt-2 text-xs font-bold py-2 rounded-lg transition text-center ${
-                                    product.stock > 0
-                                      ? 'bg-[#FF5722]/10 hover:bg-[#FF5722] text-[#FF5722] hover:text-white'
-                                      : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                                  }`}
-                                >
-                                  {product.stock > 0 ? 'Add +' : 'Out of Stock'}
-                                </button>
-                              </div>
-                            </Link>
-                          );
-                        })
+                              </Link>
+                            );
+                          })}
+                        </div>
                       )}
-                    </div>
-                  )}
-                </section>
-              </main>
+                    </section>
+                  </main>
+                );
+              })()}
             </>
           } />
 
-          <Route path="/product/:id" element={<ProductDetailPage addToCart={addToCart} />} />
+          <Route path="/product/:id" element={<ProductDetailPage addToCart={addToCart} openCart={() => setIsCartOpen(true)} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/privacy-policy" element={<PolicyPage policy="privacy" />} />
           <Route path="/terms-policy" element={<PolicyPage policy="terms" />} />
@@ -3094,19 +3084,32 @@ Amount: ₹${total}
       {/* USER AUTH MODAL */}
       {isAuthModalOpen && (
         <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-          onClick={() => setIsAuthModalOpen(false)}
+          className="velqra-auth-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
+          onClick={() => {
+            sessionStorage.setItem('velqra_login_prompt_seen', 'true');
+            setIsAuthModalOpen(false);
+          }}
         >
           <div
-            className="bg-white rounded-2xl max-w-md w-full p-6 border border-slate-100 shadow-2xl relative max-h-[90vh] overflow-y-auto"
+            className="velqra-auth-modal rounded-2xl max-w-md w-full p-6 relative max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => setIsAuthModalOpen(false)}
+              onClick={() => {
+                sessionStorage.setItem('velqra_login_prompt_seen', 'true');
+                setIsAuthModalOpen(false);
+              }}
               className="absolute top-4 right-4 text-slate-400 hover:text-black font-bold text-lg"
             >
               ✕
             </button>
+
+            <div className="mb-5 flex items-center justify-center gap-2" aria-label="VELQRA">
+              <img src={logo} alt="" className="h-12 w-auto object-contain" />
+              <span className="font-serif text-2xl font-bold tracking-[0.08em] text-[#173b32]">
+                VELQRA<sup className="ml-0.5 text-[9px] font-normal text-[#d4af37]">™</sup>
+              </span>
+            </div>
 
             {userAuthMode === 'login' ? (
               // LOGIN
@@ -3122,11 +3125,11 @@ Amount: ₹${total}
 
                 <form onSubmit={handleUserLogin} className="space-y-3.5">
                   <input
-                    type="email"
+                    type="text"
                     required
                     value={userEmail}
                     onChange={(e) => setUserEmail(e.target.value)}
-                    placeholder="Email"
+                    placeholder="Mobile Number or Gmail"
                     className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
                   />
                   <input
@@ -3175,6 +3178,16 @@ Amount: ₹${total}
                     Sign Up
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sessionStorage.setItem('velqra_login_prompt_seen', 'true');
+                    setIsAuthModalOpen(false);
+                  }}
+                  className="mt-4 w-full border-t border-slate-100 pt-4 text-center text-xs font-bold text-slate-500 hover:text-[#173b32]"
+                >
+                  Continue without login
+                </button>
               </>
             ) : regStep === 'form' ? (
               // REGISTER - Step 1: Form
@@ -3718,54 +3731,49 @@ Amount: ₹${total}
       )}
 
       {/* FOOTER */}
-      <footer className="site-footer mt-auto">
-        <div className="container mx-auto px-4 pt-10 pb-6">
-          <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr_1fr] gap-8 md:gap-12">
-            <div>
-              <Link to="/" className="footer-brand inline-flex items-center gap-3" aria-label="AteliMarket home">
-                <img src={logo} alt="AteliMarket" className="h-11 w-auto max-w-[210px] object-contain rounded-lg" />
-                <span className="footer-brand-name">VELQRA<sup className="brand-trademark" aria-label="trademark">TM</sup></span>
-              </Link>
-              <p className="mt-4 max-w-sm text-sm leading-6 text-slate-600">
-                Thoughtfully selected products, simple shopping and dependable delivery for your everyday needs.
-              </p>
-              <div className="mt-5 flex items-center gap-3">
-                <a href="https://instagram.com/officialvelqra" target="_blank" rel="noopener noreferrer" aria-label="Instagram" className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-[#FF5722] hover:text-[#FF5722]">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r=".8" fill="currentColor" stroke="none"/></svg>
-                </a>
-                <a href="https://facebook.com/officialvelqra" target="_blank" rel="noopener noreferrer" aria-label="Facebook" className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-[#1877F2] hover:text-[#1877F2]">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current"><path d="M14 8h3V4h-3c-3 0-5 2-5 5v2H6v4h3v5h4v-5h3l1-4h-4V9c0-.6.4-1 1-1z"/></svg>
-                </a>
-                <a href="https://youtube.com/officialvelqra" target="_blank" rel="noopener noreferrer" aria-label="YouTube" className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-[#FF0000] hover:text-[#FF0000]">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current"><path d="M23 12s0-3.4-.4-4.9a2.8 2.8 0 0 0-2-2C18.9 4.7 12 4.7 12 4.7s-6.9 0-8.6.4a2.8 2.8 0 0 0-2 2C1 8.6 1 12 1 12s0 3.4.4 4.9a2.8 2.8 0 0 0 2 2c1.7.4 8.6.4 8.6.4s6.9 0 8.6-.4a2.8 2.8 0 0 0 2-2C23 15.4 23 12 23 12zM9.7 15.4V8.6L15.9 12l-6.2 3.4z"/></svg>
-                </a>
-              </div>
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-slate-900">Explore</h2>
-              <div className="mt-4 flex flex-col gap-3 text-sm text-slate-600">
-                <Link to="/about" className="w-fit hover:text-[#0B3C5D] transition">About Us</Link>
-                <Link to="/orders" className="w-fit hover:text-[#0B3C5D] transition">Track Your Order</Link>
-                <a href="mailto:gs8901346287@gmail.com" className="w-fit hover:text-[#0B3C5D] transition">Contact Support</a>
-              </div>
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-slate-900">Policies</h2>
-              <div className="mt-4 flex flex-col gap-3 text-sm text-slate-600">
-                <Link to="/privacy-policy" className="w-fit hover:text-[#0B3C5D] transition">Privacy Policy</Link>
-                <Link to="/terms-policy" className="w-fit hover:text-[#0B3C5D] transition">Terms & Conditions</Link>
-                <Link to="/return-refund-policy" className="w-fit hover:text-[#0B3C5D] transition">Return & Refund Policy</Link>
-                <Link to="/shipping-policy" className="w-fit hover:text-[#0B3C5D] transition">Shipping Policy</Link>
-                <Link to="/contact-policy" className="w-fit hover:text-[#0B3C5D] transition">Contact Policy</Link>
-              </div>
-            </div>
+      <footer className="border-t border-neutral-800 bg-neutral-950 py-12 px-6 mt-20">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-8">
+          <div>
+            <Link to="/" aria-label="VELQRA home" className="mb-3 flex items-center gap-2">
+              <img src={logo} alt="VELQRA" className="h-12 w-auto max-w-[150px] object-contain object-left" />
+              <span className="font-serif text-xl font-bold tracking-[0.08em] text-[#173b32]">
+                VELQRA<sup className="ml-0.5 text-[8px] font-normal text-[#d4af37]">™</sup>
+              </span>
+            </Link>
+            <p className="text-xs text-neutral-400 leading-relaxed">Premium International Skin Science. Formulated with pure botanical actives for radiant, healthy skin.</p>
           </div>
-          <div className="mt-8 flex flex-col md:flex-row items-center justify-between gap-3 border-t border-slate-200 pt-5 text-xs text-slate-500">
-            <span>© 2026 AteliMarket. All rights reserved.</span>
-            <span>Secure shopping • Easy returns • Trusted support</span>
+          <div>
+            <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">LEGAL & POLICIES</h5>
+            <ul className="space-y-2 text-xs text-neutral-400">
+              {['Shipping', 'Privacy', 'Terms', 'Returns'].map((label) => (
+                <li key={label}><button onClick={() => setActivePolicy(label)} className="hover:text-amber-400">{label === 'Terms' ? 'Terms of Service' : `${label} Policy`}</button></li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">SUPPORT</h5>
+            <p className="text-xs text-neutral-400">support@velqra.com</p>
+            <p className="text-xs text-neutral-400 mt-1">+91 1800-VELQRA-CARE</p>
+          </div>
+          <div>
+            <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">SOCIAL</h5>
+            <p className="text-xs text-neutral-400">@officialvelqra</p>
           </div>
         </div>
+        <div className="max-w-6xl mx-auto border-t border-neutral-900 mt-8 pt-6 text-center text-[11px] text-neutral-600">
+          © {new Date().getFullYear()} VELQRA. All Rights Reserved.
+        </div>
       </footer>
+      {activePolicy && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setActivePolicy(null)} />
+          <div className="relative bg-neutral-900 border border-neutral-800 p-6 rounded-2xl max-w-lg w-full z-10">
+            <h3 className="text-lg font-bold text-amber-400 mb-2">{activePolicy} Policy</h3>
+            <p className="text-xs text-neutral-300 leading-relaxed">Standard VELQRA operational guidelines apply. Fast 3-5 day dispatch nationwide with full tracking support.</p>
+            <button onClick={() => setActivePolicy(null)} className="mt-4 bg-amber-400 text-black font-bold text-xs px-4 py-2 rounded-lg hover:bg-amber-500">Close</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

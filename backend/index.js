@@ -633,15 +633,24 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
     
-    const normalizedEmail = email.trim().toLowerCase();
-    console.log('🔍 Login attempt:', normalizedEmail);
+    const identifier = email.trim();
+    const normalizedEmail = identifier.toLowerCase();
+    const normalizedPhone = identifier.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').slice(-10);
+    const isEmail = identifier.includes('@');
+
+    if (!isEmail && normalizedPhone.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter a valid Gmail address or 10-digit mobile number'
+      });
+    }
+    console.log(`🔍 Login attempt: ${normalizedEmail}`);
     
     // Check admins table
-    const { data: admin, error: adminError } = await supabase
-      .from('admins')
-      .select('*')
-      .ilike('email', normalizedEmail)
-      .single();
+    let adminQuery = supabase.from('admins').select('*');
+    const { data: admin, error: adminError } = isEmail
+      ? await adminQuery.ilike('email', normalizedEmail).single()
+      : await supabase.from('admins').select('*').ilike('phone', `%${normalizedPhone}%`).single();
     
     if (admin) {
       console.log('📊 Admin found, verifying password...');
@@ -676,11 +685,10 @@ app.post('/api/auth/login', async (req, res) => {
     }
     
     // Check users table
-    const { data: user, error: findError } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('email', normalizedEmail)
-      .single();
+    let userQuery = supabase.from('users').select('*');
+    const { data: user, error: findError } = isEmail
+      ? await userQuery.ilike('email', normalizedEmail).single()
+      : await supabase.from('users').select('*').ilike('phone', `%${normalizedPhone}%`).single();
     
     if (findError || !user) {
       console.log('❌ User not found');

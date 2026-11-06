@@ -3,7 +3,20 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+export const supabase = createClient(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder-anon-key'
+);
+
+export const requireSupabaseAdmin = async () => {
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error || !session?.user) return false;
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  return !userError && user?.app_metadata?.admin === true;
+};
 
 // =============================================
 // Auth Functions (अगर Supabase Auth use करते हैं)
