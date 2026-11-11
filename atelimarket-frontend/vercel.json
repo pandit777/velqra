@@ -1,24 +1,22 @@
 {
-  "name": "atelimarket-frontend",
-  "version": 2,
-  "builds": [
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
     {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "frontend/build"
-      }
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
-  "routes": [
+  "headers": [
     {
-      "src": "/(.*)",
-      "dest": "frontend/build/index.html"
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" }
+      ]
     }
-  ],
-  "env": {
-    "REACT_APP_API_URL": "https://atelimarket-backend.onrender.com/api/products",
-    "REACT_APP_AUTH_URL": "https://atelimarket-backend.onrender.com/api/auth",
-    "REACT_APP_IMAGE_URL": "https://atelimarket-backend.onrender.com/uploads"
-  }
+  ]
 }

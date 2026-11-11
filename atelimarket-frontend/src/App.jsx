@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
@@ -10,9 +10,22 @@ import velqraLogo from './assets/velqra-logo.png';
 // =============================================
 // API URLs - SECURE (Environment Variables)
 // =============================================
-const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD
+    ? 'https://atelimarket-backend.onrender.com/api'
+    : 'http://localhost:5000/api')
+).replace(/\/$/, '');
 const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
+const getPayUPaymentUrl = (value) => {
+  const paymentUrl = new URL(String(value));
+  if (paymentUrl.protocol !== 'https:' ||
+      !['secure.payu.in', 'test.payu.in'].includes(paymentUrl.hostname)) {
+    throw new Error('Invalid payment gateway URL');
+  }
+  return paymentUrl.href;
+};
 
 const getCachedProducts = () => {
   try {
@@ -23,6 +36,38 @@ const getCachedProducts = () => {
     return [];
   }
 };
+
+const getSessionUser = () => {
+  try {
+    const saved = sessionStorage.getItem('velqra_user');
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    sessionStorage.removeItem('velqra_user');
+    return null;
+  }
+};
+
+const normalizeCart = (items = []) => items.map(item => ({
+  ...item,
+  _id: item._id || item.productId || item.product_id,
+  originalPrice: item.originalPrice ?? item.original_price ?? 0,
+  image: item.image || item.imageUrl || item.image_url || '',
+  selectedAttributes: item.selectedAttributes || item.selected_attributes || {}
+}));
+
+const normalizeProduct = (product) => ({
+  ...product,
+  _id: product._id || product.id,
+  originalPrice: Number(product.originalPrice ?? product.original_price ?? product.price ?? 0),
+  discountPercent: Number(product.discountPercent ?? product.discount_percent ?? 0),
+  price: Number(
+    product.price ??
+    Number(product.original_price ?? product.originalPrice ?? 0) *
+      (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100)
+  ),
+  promoCode: product.promoCode || product.promo_code || '',
+  promoDiscount: Number(product.promoDiscount ?? product.promo_discount ?? 0)
+});
 
 // =============================================
 // Helper Functions
@@ -81,6 +126,520 @@ const getVimeoId = (url) => {
   return match ? match[1] : null;
 };
 
+
+// ═══════════════════════════════════════════════════
+// 🧪 TEST MODE BANNER
+// ═══════════════════════════════════════════════════
+const TestModeBanner = ({ otp }) => (
+  <div className="bg-amber-50 border-2 border-dashed border-amber-400 rounded-xl px-4 py-3 mb-4">
+    <div className="flex items-start gap-2">
+      <span className="text-lg flex-shrink-0">🧪</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-black uppercase tracking-wide text-amber-700">Test Mode Active</p>
+        <p className="text-[11px] text-amber-600 mt-0.5 leading-tight">SMS is disabled for this number. OTP auto-filled for testing.</p>
+        {otp && (
+          <p className="mt-2 text-sm font-black text-amber-800 tracking-widest">
+            OTP: <span className="bg-amber-200 px-2 py-0.5 rounded">{otp}</span>
+          </p>
+        )}
+      </div>
+    </div>
+  </div>
+);
+
+// ═══════════════════════════════════════════════════
+// 🆕 RETURN REQUEST MODAL (COD — OTP + Bank + Form)
+// ═══════════════════════════════════════════════════
+const RETURN_REASONS = [
+  'Damaged product',
+  'Wrong item received',
+  'Product not as described',
+  'Quality issue',
+  'Size/fit issue',
+  'Changed my mind',
+  'Other'
+];
+
+const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
+  const [step, setStep] = useState('otp'); // otp → otp-verify → bank → form → done
+  const [otp, setOtp] = useState('');
+  const [devOtp, setDevOtp] = useState('');
+  const [returnToken, setReturnToken] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [timer, setTimer] = useState(0);
+  const [resendDisabled, setResendDisabled] = useState(false);
+
+  // Bank
+  const [bank, setBank] = useState({
+    accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '', upiId: ''
+  });
+  const [bankError, setBankError] = useState('');
+
+  // Return form
+  const [selectedItems, setSelectedItems] = useState({});
+  const [reason, setReason] = useState('');
+  const [description, setDescription] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const token = sessionStorage.getItem('velqra_user_token');
+
+  useEffect(() => {
+    let interval;
+    if (timer > 0) {
+      interval = setInterval(() => setTimer(prev => prev - 1), 1000);
+    } else {
+      setResendDisabled(false);
+    }
+    return () => clearInterval(interval);
+  }, [timer]);
+
+  useEffect(() => {
+  if (isOpen) {
+    setStep('otp');
+    setOtp('');
+    setDevOtp('');
+    setReturnToken('');
+    setError('');
+    setSelectedItems({});
+    setReason('');
+    setDescription('');
+    setSubmitError('');
+    setBankError('');
+    setTimer(0);
+    // ❌ Auto-send hata diya — user khud "Send OTP" dabayega
+  }
+}, [isOpen]);
+
+  const startTimer = () => {
+    setTimer(60);
+    setResendDisabled(true);
+  };
+
+  if (!isOpen || !order) return null;
+
+  // ========== STEP 1: Send OTP ==========
+  const sendOtp = async () => {
+    setLoading(true);
+    setError('');
+    setDevOtp('');
+    try {
+      const res = await axios.post(
+        `${API_URL}/returns/send-otp`,
+        { orderId: order._id || order.id },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.success) {
+        setStep('otp-verify');
+        startTimer();
+        if (res.data.otp) {
+          setOtp(res.data.otp);
+          setDevOtp(res.data.otp);
+        }
+      } else {
+        setError(res.data.message || 'Failed to send OTP');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to send OTP');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ========== STEP 2: Verify OTP ==========
+  const verifyOtp = async (e) => {
+    e.preventDefault();
+    if (otp.length !== 6) return setError('Enter 6-digit OTP');
+    setLoading(true);
+    setError('');
+    try {
+      const res = await axios.post(
+        `${API_URL}/returns/verify-otp`,
+        { orderId: order._id || order.id, otp: otp.trim() },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.success) {
+        setReturnToken(res.data.returnToken);
+
+        // Bank details check karo
+        const bankRes = await axios.get(`${API_URL}/bank-details`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        if (bankRes.data.bankDetails) {
+          setBank({
+            accountHolderName: bankRes.data.bankDetails.accountHolderName || '',
+            accountNumber: bankRes.data.bankDetails.accountNumber || '',
+            ifscCode: bankRes.data.bankDetails.ifscCode || '',
+            bankName: bankRes.data.bankDetails.bankName || '',
+            upiId: bankRes.data.bankDetails.upiId || ''
+          });
+          setStep('form');
+        } else {
+          setStep('bank');
+        }
+      } else {
+        setError(res.data.message || 'OTP verification failed');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'OTP verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ========== STEP 3: Save Bank ==========
+  const saveBank = async (e) => {
+    e.preventDefault();
+    if (!bank.accountHolderName || !bank.accountNumber || !bank.ifscCode || !bank.bankName) {
+      return setBankError('All bank fields are required');
+    }
+    setBankError('');
+    setLoading(true);
+    try {
+      const res = await axios.post(
+        `${API_URL}/bank-details`,
+        bank,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.success) {
+        setStep('form');
+      } else {
+        setBankError(res.data.message || 'Failed to save bank details');
+      }
+    } catch (err) {
+      setBankError(err.response?.data?.message || 'Failed to save bank details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ========== STEP 4: Submit Return ==========
+  const submitReturn = async () => {
+    const items = Object.entries(selectedItems)
+      .filter(([, qty]) => qty > 0)
+      .map(([productId, qty]) => ({ productId, qty }));
+
+    if (items.length === 0) return setSubmitError('Select at least one item');
+    if (!reason) return setSubmitError('Select a reason');
+
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const res = await axios.post(
+        `${API_URL}/returns`,
+        {
+          orderId: order._id || order.id,
+          items,
+          reason,
+          description,
+          returnToken
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.data.success) {
+        setStep('done');
+        if (onSuccess) onSuccess(res.data.returnRequest);
+      } else {
+        setSubmitError(res.data.message || 'Failed to submit return');
+      }
+    } catch (err) {
+      setSubmitError(err.response?.data?.message || 'Failed to submit return');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Refund estimate
+  const refundAmount = Object.entries(selectedItems).reduce((sum, [pid, qty]) => {
+    const item = (order.items || []).find(i => (i.product_id || i._id || i.id) === pid);
+    return sum + ((item?.price || 0) * qty);
+  }, 0);
+
+  // Overlay render
+  return (
+    <div
+      className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl max-w-lg w-full p-6 border border-slate-100 shadow-2xl relative max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-slate-400 hover:text-black font-bold text-lg"
+        >
+          ✕
+        </button>
+
+        {/* STEP 1: OTP Sending */}
+        {step === 'otp' && (
+          <>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="text-2xl">↩️</span>
+              <h3 className="text-lg font-black text-[#0B3C5D]">Return Request</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              OTP bhejenge aapke registered mobile pe verify karne ke liye.
+            </p>
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">
+                {error}
+              </div>
+            )}
+            <button
+              onClick={sendOtp}
+              disabled={loading}
+              className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b] disabled:opacity-50"
+            >
+              {loading ? '⏳ Sending OTP...' : '📱 Send OTP'}
+            </button>
+          </>
+        )}
+
+        {/* STEP 2: Verify OTP */}
+        {step === 'otp-verify' && (
+          <>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="text-2xl">📱</span>
+              <h3 className="text-lg font-black text-[#0B3C5D]">Verify OTP</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Enter 6-digit OTP sent to your registered mobile.
+            </p>
+            {devOtp && <TestModeBanner otp={devOtp} />}
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">
+                {error}
+              </div>
+            )}
+            <form onSubmit={verifyOtp} className="space-y-4">
+              <input
+                type="text"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="Enter 6-digit OTP"
+                maxLength={6}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-xl text-sm text-center text-2xl font-bold tracking-widest focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">
+                  {timer > 0 ? `Resend in ${timer}s` : "Didn't receive OTP?"}
+                </span>
+                <button
+                  type="button"
+                  onClick={sendOtp}
+                  disabled={resendDisabled || loading}
+                  className="font-bold text-[#0B3C5D] hover:underline disabled:opacity-50"
+                >
+                  Resend OTP
+                </button>
+              </div>
+              <button
+                type="submit"
+                disabled={loading || otp.length < 6}
+                className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b] disabled:opacity-50"
+              >
+                {loading ? '⏳ Verifying...' : '✅ Verify OTP'}
+              </button>
+            </form>
+          </>
+        )}
+
+        {/* STEP 3: Bank Details */}
+        {step === 'bank' && (
+          <>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="text-2xl">🏦</span>
+              <h3 className="text-lg font-black text-[#0B3C5D]">Bank Details</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Refund isi account mein aayega. Ye details safe rahengi.
+            </p>
+            {bankError && (
+              <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">
+                {bankError}
+              </div>
+            )}
+            <form onSubmit={saveBank} className="space-y-3">
+              <input
+                placeholder="Account Holder Name *"
+                value={bank.accountHolderName}
+                onChange={(e) => setBank({ ...bank, accountHolderName: e.target.value })}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <input
+                placeholder="Account Number * (9-18 digits)"
+                value={bank.accountNumber}
+                onChange={(e) => setBank({ ...bank, accountNumber: e.target.value.replace(/\D/g, '') })}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <input
+                placeholder="IFSC Code * (e.g., SBIN0001234)"
+                value={bank.ifscCode}
+                onChange={(e) => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <input
+                placeholder="Bank Name *"
+                value={bank.bankName}
+                onChange={(e) => setBank({ ...bank, bankName: e.target.value })}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <input
+                placeholder="UPI ID (optional)"
+                value={bank.upiId}
+                onChange={(e) => setBank({ ...bank, upiId: e.target.value })}
+                className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b] disabled:opacity-50"
+              >
+                {loading ? '⏳ Saving...' : '💾 Save & Continue'}
+              </button>
+            </form>
+          </>
+        )}
+
+        {/* STEP 4: Return Form */}
+        {step === 'form' && (
+          <>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="text-2xl">📦</span>
+              <h3 className="text-lg font-black text-[#0B3C5D]">Return Details</h3>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-4">
+              Select items and reason for return.
+            </p>
+
+            {/* Item select */}
+            <div className="mb-4">
+              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-2">
+                Select Items *
+              </label>
+              <div className="space-y-2 max-h-48 overflow-y-auto border border-slate-100 rounded-xl p-2">
+                {(order.items || []).map((item) => {
+                  const pid = item.product_id || item._id || item.id;
+                  return (
+                    <div key={pid} className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg">
+                      <input
+                        type="checkbox"
+                        checked={selectedItems[pid] > 0}
+                        onChange={(e) => {
+                          setSelectedItems(prev => ({
+                            ...prev,
+                            [pid]: e.target.checked ? 1 : 0
+                          }));
+                        }}
+                        className="w-4 h-4"
+                      />
+                      <img
+                        src={item.image || getProductDisplayImage(item)}
+                        alt=""
+                        className="w-10 h-10 rounded object-cover border"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-xs text-slate-800 truncate">{item.name}</div>
+                        <div className="text-[10px] text-slate-500">₹{item.price} × max {item.qty}</div>
+                      </div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={item.qty}
+                        value={selectedItems[pid] || 1}
+                        onChange={(e) => setSelectedItems(prev => ({
+                          ...prev,
+                          [pid]: Math.min(item.qty, Math.max(1, Number(e.target.value) || 1))
+                        }))}
+                        className="w-14 border rounded px-1 py-0.5 text-xs text-center"
+                        disabled={!selectedItems[pid]}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Reason */}
+            <div className="mb-3">
+              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                Reason *
+              </label>
+              <select
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 px-3 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+              >
+                <option value="">Select reason</option>
+                {RETURN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+
+            {/* Description */}
+            <div className="mb-3">
+              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                Description (optional)
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] resize-none"
+                placeholder="Details batao..."
+              />
+            </div>
+
+            {/* Refund estimate */}
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-3">
+              <div className="text-xs">
+                <span className="font-bold">Estimated Refund:</span> ₹{refundAmount.toFixed(0)}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                Approve hone ke baad aapke bank account mein aayega
+              </div>
+            </div>
+
+            {submitError && (
+              <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-3">
+                {submitError}
+              </div>
+            )}
+
+            <button
+              onClick={submitReturn}
+              disabled={submitting}
+              className="w-full bg-orange-500 text-white font-bold py-3 rounded-xl text-sm hover:bg-orange-600 disabled:opacity-50"
+            >
+              {submitting ? '⏳ Submitting...' : '↩️ Submit Return Request'}
+            </button>
+          </>
+        )}
+
+        {/* STEP 5: Done */}
+        {step === 'done' && (
+          <div className="text-center py-4">
+            <div className="text-5xl mb-4">✅</div>
+            <h3 className="text-lg font-black text-[#0B3C5D] mb-2">Return Submitted!</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Aapki return request admin ke paas bhej di gayi hai. Status update hone pe notify karenge.
+            </p>
+            <button
+              onClick={onClose}
+              className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b]"
+            >
+              Close
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // =============================================
 // FORGOT PASSWORD MODAL
 // =============================================
@@ -96,6 +655,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
   const [success, setSuccess] = useState('');
   const [timer, setTimer] = useState(0);
   const [resendDisabled, setResendDisabled] = useState(false);
+  const [testModeOtp, setTestModeOtp] = useState('');
 
   useEffect(() => {
     let interval;
@@ -125,6 +685,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
       setError('');
       setSuccess('');
       setLoading(false);
+      setTestModeOtp('');
     }
   }, [isOpen]);
 
@@ -135,14 +696,21 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     setLoading(true);
     setError('');
     setSuccess('');
+    setTestModeOtp('');
 
     try {
       const response = await axios.post(`${API_URL}/auth/forgot-password`, { email });
       
       if (response.data.success) {
-        setSuccess('✅ OTP sent successfully! Please check your email.');
         setStep('otp');
         startTimer();
+        if (response.data.otp) {
+          setOtp(response.data.otp);
+          setTestModeOtp(response.data.otp);
+          setSuccess('✅ Test Mode — OTP auto-filled.');
+        } else {
+          setSuccess('✅ OTP sent successfully! Please check your email.');
+        }
       } else {
         setError(response.data.message);
       }
@@ -191,8 +759,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
       return;
     }
 
-    if (newPassword.length < 6) {
-      setError('Password must be at least 6 characters long');
+    if (newPassword.length < 8 || newPassword.length > 72) {
+      setError('Password must be 8-72 characters long');
       setLoading(false);
       return;
     }
@@ -230,13 +798,20 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     setLoading(true);
     setError('');
     setSuccess('');
+    setTestModeOtp('');
 
     try {
       const response = await axios.post(`${API_URL}/auth/forgot-password`, { email });
       
       if (response.data.success) {
-        setSuccess('✅ OTP resent successfully!');
         startTimer();
+        if (response.data.otp) {
+          setOtp(response.data.otp);
+          setTestModeOtp(response.data.otp);
+          setSuccess('✅ Test Mode — OTP auto-filled.');
+        } else {
+          setSuccess('✅ OTP resent successfully!');
+        }
       } else {
         setError(response.data.message);
       }
@@ -321,6 +896,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 
         {step === 'otp' && (
           <form onSubmit={handleVerifyOTP} className="space-y-4">
+            {testModeOtp && <TestModeBanner otp={testModeOtp} />}
+
             <div>
               <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">OTP Code</label>
               <input
@@ -416,6 +993,164 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
   );
 };
 
+// ═══════════════════════════════════════════════════
+// 🆕 ORDER OTP MODAL
+// ═══════════════════════════════════════════════════
+const OrderOTPModal = ({ isOpen, onClose, onVerified }) => {
+  const [otp, setOtp] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [timer, setTimer] = useState(0);
+  const [resendDisabled, setResendDisabled] = useState(false);
+  const [testModeOtp, setTestModeOtp] = useState('');
+  const [autoSending, setAutoSending] = useState(false);
+
+  useEffect(() => {
+    let interval;
+    if (timer > 0) {
+      interval = setInterval(() => setTimer(prev => prev - 1), 1000);
+    } else {
+      setResendDisabled(false);
+    }
+    return () => clearInterval(interval);
+  }, [timer]);
+
+  useEffect(() => {
+    if (isOpen) {
+      sendOrderOTP();
+    } else {
+      setOtp('');
+      setError('');
+      setSuccess('');
+      setTestModeOtp('');
+      setTimer(0);
+    }
+  }, [isOpen]);
+
+  const startTimer = () => {
+    setTimer(60);
+    setResendDisabled(true);
+  };
+
+  const sendOrderOTP = async () => {
+    setAutoSending(true);
+    setError('');
+    setSuccess('');
+    setTestModeOtp('');
+    try {
+      const token = sessionStorage.getItem('velqra_user_token');
+      const res = await axios.post(`${API_URL}/orders/send-otp`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.success) {
+        startTimer();
+        if (res.data.otp) {
+          setOtp(res.data.otp);
+          setTestModeOtp(res.data.otp);
+          setSuccess('🧪 Test Mode — OTP auto-filled.');
+        } else {
+          setSuccess('✅ OTP sent to your mobile.');
+        }
+      } else {
+        setError(res.data.message);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to send OTP');
+    } finally {
+      setAutoSending(false);
+    }
+  };
+
+  const handleVerify = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    if (otp.length !== 6) {
+      setError('Enter 6-digit OTP');
+      setLoading(false);
+      return;
+    }
+    try {
+      const token = sessionStorage.getItem('velqra_user_token');
+      const res = await axios.post(`${API_URL}/orders/verify-otp`, { otp: otp.trim() }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.success) {
+        setSuccess('✅ OTP verified! Placing order...');
+        setTimeout(() => onVerified(res.data.orderConfirmToken), 800);
+      } else {
+        setError(res.data.message);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to verify');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl max-w-md w-full p-6 border border-slate-100 shadow-2xl relative" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-black font-bold text-lg">✕</button>
+        <div className="flex items-center gap-3 mb-1">
+          <span className="text-2xl">🔐</span>
+          <h3 className="text-lg font-black text-[#0B3C5D]">Order Confirmation</h3>
+        </div>
+        <p className="text-[11px] text-slate-400 mb-4">Verify OTP to confirm your order</p>
+
+        {autoSending && !testModeOtp && (
+          <div className="bg-blue-50 border border-blue-200 text-blue-600 text-xs font-medium px-4 py-2 rounded-xl mb-4 flex items-center gap-2">
+            <span className="animate-spin">⏳</span> Sending OTP to your mobile...
+          </div>
+        )}
+
+        {testModeOtp && <TestModeBanner otp={testModeOtp} />}
+        {error && <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">{error}</div>}
+        {success && <div className="bg-green-50 border border-green-200 text-green-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">{success}</div>}
+
+        <form onSubmit={handleVerify} className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Enter OTP</label>
+            <input
+              type="text"
+              required
+              maxLength="6"
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+              placeholder="6-digit OTP"
+              className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] text-center text-2xl font-bold tracking-widest"
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-400">{timer > 0 ? `Resend in ${timer}s` : "Didn't get OTP?"}</span>
+            <button
+              type="button"
+              onClick={sendOrderOTP}
+              disabled={resendDisabled || autoSending}
+              className="font-bold text-[#0B3C5D] hover:underline disabled:opacity-50"
+            >
+              Resend OTP
+            </button>
+          </div>
+          <button
+            type="submit"
+            disabled={loading || otp.length < 6}
+            className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b] disabled:opacity-50"
+          >
+            {loading ? '⏳ Verifying...' : '🔓 Verify & Place Order'}
+          </button>
+          <button type="button" onClick={onClose} className="w-full text-center text-[10px] text-slate-400 hover:text-[#0B3C5D]">← Cancel</button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+
 // =============================================
 // ABOUT PAGE
 // =============================================
@@ -484,39 +1219,64 @@ const POLICY_CONTENT = {
 const PolicyPage = ({ policy }) => {
   const content = POLICY_CONTENT[policy];
   return (
-    <main className="min-h-[70vh] bg-white px-4 py-10 text-[#252525] md:px-6 md:py-14">
-      <article className="mx-auto max-w-[860px]">
-        <div className="border-b border-[#d9d9d9] pb-7 md:pb-9">
-          <h1 className="text-[30px] font-bold leading-tight tracking-[-0.02em] md:text-[38px]">{content.title}</h1>
-          <p className="mt-4 max-w-2xl text-[15px] leading-7 text-[#626262] md:text-base">{content.intro}</p>
+    <main className="min-h-[70vh] bg-[#f1f1ef] px-4 py-8 text-[#252525] sm:px-6 md:py-14">
+      <article className="mx-auto max-w-5xl">
+        <div className="overflow-hidden rounded-2xl bg-[#173b32] px-6 py-9 text-white shadow-sm sm:px-9 md:px-12 md:py-12">
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d4af37]">VELQRA · Information</p>
+          <h1 className="mt-3 text-3xl font-semibold leading-tight tracking-[-0.02em] sm:text-4xl md:text-[42px]">{content.title}</h1>
+          <p className="mt-4 max-w-3xl text-sm leading-7 text-white/80 sm:text-base">{content.intro}</p>
         </div>
-        <div className="py-3 md:py-5">
-          <div>
-              {content.sections.map(([heading, text]) => (
-                <section key={heading} className="border-b border-[#e5e5e5] py-7 md:py-8">
-                  <h2 className="text-lg font-semibold tracking-[-0.01em] text-[#202020] md:text-xl">{heading}</h2>
-                  <p className="mt-3 text-[15px] leading-[1.85] text-[#555] md:text-base">{text}</p>
-                </section>
-              ))}
-            </div>
-            {policy === 'contact' && (
-              <div className="mt-8 overflow-hidden border border-[#dedede]">
-                <iframe
-                  title="VELQRA location map"
-                  src="https://www.google.com/maps?q=28.1038478,76.2499368&z=19&output=embed"
-                  className="h-72 w-full border-0"
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                  allowFullScreen
-                />
+
+        <div className="mt-6 space-y-3 sm:mt-8 sm:space-y-4">
+          {content.sections.map(([heading, text], index) => (
+            <section key={heading} className="flex gap-4 rounded-xl border border-[#e2e1da] bg-white p-5 shadow-[0_3px_14px_rgba(20,35,28,0.035)] sm:gap-5 sm:p-6 md:p-7">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#edf2ed] text-xs font-bold tracking-wide text-[#173b32]">
+                {String(index + 1).padStart(2, '0')}
+              </span>
+              <div className="min-w-0 pt-1">
+                <h2 className="text-base font-semibold leading-snug text-[#202020] sm:text-lg">{heading}</h2>
+                <p className="mt-2 text-sm leading-7 text-[#555] sm:text-[15px] sm:leading-7">{text}</p>
               </div>
-            )}
-            <p className="mt-8 text-xs text-[#777]">Last updated: November 2026</p>
+            </section>
+          ))}
+        </div>
+
+        {policy === 'contact' && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-[#e2e1da] bg-white p-2 shadow-sm sm:mt-8">
+            <iframe
+              title="VELQRA location map"
+              src="https://www.google.com/maps?q=28.1038478,76.2499368&z=19&output=embed"
+              className="h-64 w-full rounded-lg border-0 sm:h-80"
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              allowFullScreen
+            />
           </div>
+        )}
+
+        <p className="mt-6 text-right text-xs text-[#777]">Last updated: November 2026</p>
       </article>
     </main>
   );
 };
+
+const NotFoundPage = () => (
+  <main className="flex min-h-[60vh] items-center justify-center bg-[#f1f1ef] px-4 py-16 text-center text-[#252525]">
+    <section className="max-w-lg">
+      <p className="text-sm font-bold uppercase tracking-[0.18em] text-[#173b32]">404 · Page not found</p>
+      <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">This page doesn’t exist</h1>
+      <p className="mt-3 text-sm leading-6 text-[#626262]">
+        The link may be incorrect or the page may have moved. Visit the home page to continue shopping.
+      </p>
+      <Link
+        to="/"
+        className="mt-7 inline-flex rounded-lg bg-[#173b32] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#102a24]"
+      >
+        Back to home
+      </Link>
+    </section>
+  </main>
+);
 
 const DeveloperAboutLegacyPage = () => {
   return (
@@ -600,38 +1360,55 @@ const DeveloperAboutLegacyPage = () => {
 };
 
 const AboutPage = () => (
-  <main className="min-h-[60vh] bg-white px-4 py-12 text-[#252525] md:px-6 md:py-16" aria-label="About VELQRA">
-    <article className="mx-auto max-w-[860px]">
-      <header className="border-b border-[#dedede] pb-8">
-        <h1 className="mt-3 text-[32px] font-bold leading-tight tracking-[-0.02em] md:text-[42px]">
-          Our story, built around thoughtful skincare
+  <main className="min-h-[60vh] bg-[#f1f1ef] px-4 py-8 text-[#252525] sm:px-6 md:py-14" aria-label="About VELQRA">
+    <article className="mx-auto max-w-6xl">
+      <div className="overflow-hidden rounded-2xl bg-[#173b32] px-6 py-10 text-white shadow-sm sm:px-10 md:px-14 md:py-14">
+        <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#d4af37]">About VELQRA</p>
+        <h1 className="mt-4 max-w-3xl font-serif text-3xl font-semibold leading-tight sm:text-4xl md:text-5xl">
+          Thoughtful skincare, made part of everyday life.
         </h1>
-        <p className="mt-5 max-w-2xl text-[15px] leading-8 text-[#626262] md:text-base">
-          VELQRA was founded with a clear vision: to make considered, everyday skincare accessible through clear information, honest presentation and dependable service.
+        <p className="mt-5 max-w-2xl text-sm leading-7 text-white/80 sm:text-base">
+          VELQRA brings together botanical-inspired skincare and a straightforward way to shop, so choosing everyday care feels clear and considered.
         </p>
-      </header>
+      </div>
 
-      <section className="border-b border-[#e5e5e5] py-7 md:py-8">
-        <h2 className="text-xl font-semibold text-[#202020] md:text-2xl">Leadership</h2>
-        <p className="mt-3 max-w-3xl text-[15px] leading-8 text-[#555] md:text-base">
-          VELQRA is led and represented by its co-founders, Dr. Ajay Saini and Dr. Roshan Kumar.
-        </p>
-        <div className="mt-7 grid gap-5 md:grid-cols-2">
-          {['Dr. Ajay Saini', 'Dr. Roshan Kumar'].map((name) => (
-            <div key={name} className="border-t border-[#dedede] pt-5">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#888]">Co-Founder</p>
-              <h3 className="mt-2 text-xl font-semibold text-[#202020]">{name}</h3>
-              <p className="mt-3 text-sm leading-7 text-[#626262]">Co-founder of VELQRA, contributing to the brand vision and development of its skincare offering.</p>
-            </div>
-          ))}
+      <section className="grid gap-8 py-10 md:grid-cols-[1.2fr_0.8fr] md:gap-14 md:py-14">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#8b6e2d]">Our point of view</p>
+          <h2 className="mt-3 font-serif text-2xl font-semibold leading-snug text-[#202020] sm:text-3xl">
+            Good shopping starts with clarity.
+          </h2>
         </div>
+        <p className="text-sm leading-7 text-[#555] sm:text-base">
+          From product details to delivery information, we aim to make the essentials easy to understand. Our focus is on considered product presentation, transparent information and dependable customer support.
+        </p>
       </section>
 
-      <section className="py-7 md:py-8">
-        <h2 className="text-xl font-semibold text-[#202020] md:text-2xl">Our approach</h2>
-        <p className="mt-4 text-[15px] leading-8 text-[#555] md:text-base">
-          We focus on straightforward product information, careful product presentation and a customer experience that remains consistent from discovery to delivery. Our goal is to help customers choose confidently and receive clear support throughout their order journey.
-        </p>
+      <section aria-label="What you can expect" className="grid gap-4 border-t border-[#dedede] py-8 sm:grid-cols-3 md:py-10">
+        {[
+          ['01', 'Considered products', 'Explore skincare selected for a simple, everyday routine.'],
+          ['02', 'Clear information', 'Find product, order and policy details in one easy-to-navigate store.'],
+          ['03', 'Here to help', 'Reach our support team when you need help with an order or account.']
+        ].map(([number, title, description]) => (
+          <div key={number} className="rounded-xl border border-[#e1e0da] bg-white p-5 sm:p-6">
+            <p className="text-xs font-bold tracking-[0.16em] text-[#8b6e2d]">{number}</p>
+            <h3 className="mt-3 text-base font-semibold text-[#202020]">{title}</h3>
+            <p className="mt-2 text-sm leading-6 text-[#626262]">{description}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="flex flex-col gap-4 rounded-xl border border-[#deded7] bg-[#e9e9e3] p-5 sm:flex-row sm:items-center sm:justify-between sm:p-7">
+        <div>
+          <h2 className="text-lg font-semibold text-[#202020]">Need a hand?</h2>
+          <p className="mt-1 text-sm leading-6 text-[#626262]">Our support team can help with orders, delivery and account questions.</p>
+        </div>
+        <Link
+          to="/contact-policy"
+          className="inline-flex shrink-0 justify-center rounded-lg bg-[#173b32] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#102a24]"
+        >
+          Contact us
+        </Link>
       </section>
     </article>
   </main>
@@ -654,9 +1431,27 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
 
   useEffect(() => {
     const fetchProductDetails = async () => {
+      const cachedProduct = getCachedProducts().find(item => String(item._id || item.id) === id);
+      if (cachedProduct) {
+        const productData = normalizeProduct(cachedProduct);
+        setProduct(productData);
+        const cachedImage = getProductDisplayImage(productData);
+        setMainImage(cachedImage);
+        setSelectedImage(cachedImage);
+        if (productData.attributes && typeof productData.attributes === 'object') {
+          setSelectedAttributes(Object.fromEntries(
+            Object.entries(productData.attributes)
+              .filter(([, values]) => Array.isArray(values) && values.length > 0)
+              .map(([key, values]) => [key, values[0]])
+          ));
+        }
+        setLoading(false);
+      }
+
       try {
-        setLoading(true);
+        if (!cachedProduct) setLoading(true);
         if (!isSupabaseConfigured) {
+          if (cachedProduct) return;
           throw new Error('Supabase is not configured');
         }
         let result = await supabase
@@ -677,19 +1472,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
 
         if (error) throw error;
         if (data) {
-          const productData = {
-            ...data,
-            _id: data._id || data.id,
-            originalPrice: Number(data.originalPrice ?? data.original_price ?? data.price ?? 0),
-            discountPercent: Number(data.discountPercent ?? data.discount_percent ?? 0),
-            price: Number(
-              data.price ??
-              Number(data.original_price ?? data.originalPrice ?? 0) *
-                (1 - Number(data.discountPercent ?? data.discount_percent ?? 0) / 100)
-            ),
-            promoCode: data.promoCode || data.promo_code || '',
-            promoDiscount: Number(data.promoDiscount ?? data.promo_discount ?? 0)
-          };
+          const productData = normalizeProduct(data);
           setProduct(productData);
           
           const mainImg = getProductDisplayImage(productData);
@@ -707,10 +1490,10 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
             setSelectedAttributes(initialAttrs);
           }
         } else {
-          setError('Product not found');
+          if (!cachedProduct) setError('Product not found');
         }
       } catch (err) {
-        setError(err.message || err.response?.data?.message || 'Failed to fetch product');
+        if (!cachedProduct) setError(err.message || err.response?.data?.message || 'Failed to fetch product');
       } finally {
         setLoading(false);
       }
@@ -808,7 +1591,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
   const promoSavings = promoApplied ? product.price - promoPrice : 0;
 
   return (
-    <div className="container mx-auto max-w-6xl px-4 py-8 overflow-x-hidden text-white">
+    <div className="container mx-auto max-w-6xl px-4 py-8 overflow-x-hidden text-[#171717]">
       <nav className="mb-6 text-sm text-slate-400 break-words">
         <Link to="/" className="hover:text-[#0B3C5D] transition">Home</Link>
         <span className="mx-2">/</span>
@@ -861,20 +1644,20 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
             <span className="inline-block bg-slate-100 text-slate-500 text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full mb-3">
               {product.category}
             </span>
-            <h1 className="w-full break-words [overflow-wrap:anywhere] text-3xl font-black leading-tight text-white sm:text-4xl">{product.name}</h1>
+            <h1 className="w-full break-words [overflow-wrap:anywhere] text-3xl font-black leading-tight text-[#171717] sm:text-4xl">{product.name}</h1>
             {product.brand && (
               <p className="text-sm text-slate-500 mt-1">Brand: <span className="font-medium">{product.brand}</span></p>
             )}
           </div>
 
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <div className="flex items-baseline gap-3 flex-wrap">
-              <span className="text-3xl font-black text-amber-400">₹{promoPrice}</span>
+              <span className="text-3xl font-black text-[#173b32]">₹{promoPrice}</span>
               {product.discountPercent > 0 && (
                 <>
-                  <span className="text-lg text-slate-400 line-through">₹{product.originalPrice}</span>
+                  <span className="text-lg text-slate-500 line-through">₹{product.originalPrice}</span>
                   {promoApplied && (
-                    <span className="text-sm text-slate-400 line-through">₹{product.price}</span>
+                    <span className="text-sm text-slate-500 line-through">₹{product.price}</span>
                   )}
                   <span className="bg-green-100 text-green-700 font-bold text-sm px-3 py-1 rounded-full">
                     -{product.discountPercent}% OFF
@@ -939,7 +1722,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
               type="button"
               onClick={handleBuyNow}
               disabled={product.stock <= 0}
-              className="rounded-xl border border-amber-400 bg-transparent py-3.5 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-amber-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl border border-[#173b32] bg-transparent py-3.5 text-sm font-bold uppercase tracking-wide text-[#173b32] transition hover:bg-[#173b32] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               Buy Now
             </button>
@@ -1029,18 +1812,18 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           </div>
 
           {product.description && (
-            <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 p-5">
-              <h3 className="font-bold text-sm text-white mb-2 flex items-center gap-2">
+            <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="font-bold text-sm text-slate-800 mb-2 flex items-center gap-2">
                 <span>📝</span> Description
               </h3>
-              <p className="w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-neutral-300">
+              <p className="w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-slate-600">
                 {product.description}
               </p>
             </div>
           )}
 
           <div className="flex gap-3">
-            <Link to="/" className="px-6 py-3.5 rounded-xl font-bold text-sm border border-neutral-700 text-white hover:bg-neutral-800 transition">
+            <Link to="/" className="px-6 py-3.5 rounded-xl font-bold text-sm border border-slate-300 text-slate-700 hover:bg-slate-100 transition">
               ← Back
             </Link>
           </div>
@@ -1067,7 +1850,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
   const fetchOrders = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('atelimarket_user_token');
+      const token = sessionStorage.getItem('velqra_user_token');
       
       if (!token) {
         setError('Please login to view orders');
@@ -1084,7 +1867,6 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
       }
     } catch (err) {
       setError('Failed to fetch orders');
-      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -1093,6 +1875,21 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
   useEffect(() => {
     fetchOrders();
   }, []);
+
+    useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment');
+    if (paymentStatus === 'success') {
+      alert('✅ Payment successful! Your order is confirmed.');
+      window.history.replaceState({}, '', '/orders');
+      fetchOrders();
+    } else if (paymentStatus === 'failure') {
+      alert('❌ Payment failed. You can retry from the order details.');
+      window.history.replaceState({}, '', '/orders');
+      fetchOrders();
+    }
+  }, []);
+
 
   const getStatusBadge = (status, paymentMethod) => {
     if (paymentMethod === 'cod') {
@@ -1109,6 +1906,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
       const styles = {
         'Payment Verification Pending': 'bg-orange-100 text-orange-700',
         'Payment Verified': 'bg-green-100 text-green-700',
+        'Payment Failed': 'bg-red-100 text-red-700',
         'Confirmed': 'bg-blue-100 text-blue-700',
         'Shipped': 'bg-purple-100 text-purple-700',
         'Delivered': 'bg-green-100 text-green-700',
@@ -1126,6 +1924,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
       const statusMap = {
         'Payment Verification Pending': '⏳ Payment Pending',
         'Payment Verified': '✅ Payment Verified',
+        'Payment Failed': '❌ Payment Failed',
         'Confirmed': '📋 Order Confirmed',
         'Shipped': '🚚 Shipped',
         'Delivered': '📦 Delivered',
@@ -1136,11 +1935,11 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
     }
   };
 
-  const canCancelOrder = (order) => {
+    const canCancelOrder = (order) => {
     if (order.status === 'Delivered' || order.status === 'Cancelled') return false;
     if (order.status === 'Shipped' || order.status === 'Confirmed' || order.status === 'Payment Verified') return false;
     if (order.paymentMethod === 'cod' && order.status === 'Pending') return true;
-    if (order.paymentMethod === 'online' && order.status === 'Payment Verification Pending') return true;
+    if (order.paymentMethod === 'online' && (order.status === 'Payment Verification Pending' || order.status === 'Payment Failed')) return true;
     return false;
   };
 
@@ -1151,41 +1950,38 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
     return deliveredEntry?.timestamp ? new Date(deliveredEntry.timestamp) : new Date(order.updatedAt || order.createdAt);
   };
 
+    // ✅ NAYA: COD return + online return dono ke liye (7-day window check)
   const canRequestReturn = (order) => {
-    if (order.status !== 'Delivered' || order.paymentMethod !== 'online' || !order.createdAt) return false;
+    if (order.status !== 'Delivered') return false;
+    if (order.returnRequest) return false; // pehle se return hai
+    if (!order.createdAt) return false;
     const deliveredAt = getDeliveredAt(order);
     if (Number.isNaN(deliveredAt.getTime())) return false;
     return Date.now() - deliveredAt.getTime() <= 7 * 24 * 60 * 60 * 1000;
   };
 
-  const handleReturnRequest = async (order) => {
-    if (!canRequestReturn(order)) {
-      alert('Return window has expired or this order is not eligible for return.');
-      return;
-    }
+  // ✅ Modal open karne ke liye
+  const openReturnModal = (order) => {
+    setReturnModalOrder(order);
+  };
 
-    const enteredOrderId = window.prompt(`Enter the full Order ID to confirm this return:\n${order._id}`);
-    if (!enteredOrderId) return;
-
-    const isSealed = window.confirm(
-      'Is the product completely sealed and unused, with the original packaging and seal intact?\n\nSelect OK only if the seal is intact. Opened/unsealed products are not eligible for refund.'
-    );
-
+  // ✅ Return request cancel karne ke liye (sirf Pending tak)
+  const handleCancelReturn = async (returnId) => {
+    if (!window.confirm('Return cancel karna hai? Ye action undo nahi hoga.')) return;
+    const token = sessionStorage.getItem('velqra_user_token');
     try {
       setLoading(true);
-      const token = localStorage.getItem('atelimarket_user_token');
-      const response = await axios.patch(
-        `${API_URL}/orders/${order._id}/return`,
-        { orderId: enteredOrderId.trim(), sealed: isSealed },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      const res = await axios.patch(
+        `${API_URL}/returns/${returnId}/cancel`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
       );
-
-      if (response.data.success) {
-        alert('✅ Return request submitted. Refund will be processed after sealed-package verification.');
+      if (res.data.success) {
+        alert('✅ Return cancelled successfully');
         fetchOrders();
       }
     } catch (err) {
-      alert(err.response?.data?.message || 'Return request could not be submitted.');
+      alert(err.response?.data?.message || 'Failed to cancel return');
     } finally {
       setLoading(false);
     }
@@ -1194,7 +1990,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
   const handleCancelOrder = async (orderId) => {
     if (!window.confirm('Are you sure you want to cancel this order?')) return;
     
-    const token = localStorage.getItem('atelimarket_user_token');
+    const token = sessionStorage.getItem('velqra_user_token');
     if (!token) {
       alert('Please login to cancel order');
       return;
@@ -1376,7 +2172,7 @@ const OrderTracking = () => {
   const fetchOrderTracking = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('atelimarket_user_token');
+      const token = sessionStorage.getItem('velqra_user_token');
       
       const response = await axios.get(
         `${API_URL}/orders/${orderId}/tracking`,
@@ -1390,7 +2186,6 @@ const OrderTracking = () => {
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch order tracking');
-      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -1571,14 +2366,13 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [products, setProducts] = useState(getCachedProducts);
-  const [cart, setCart] = useState(() => {
-    const saved = localStorage.getItem('atelimarket_cart');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [cart, setCart] = useState([]);
+  const cartMutationQueue = useRef(Promise.resolve());
   const [searchQuery, setSearchQuery] = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState('All');
   const [loading, setLoading] = useState(false);
+  const [cartLoading, setCartLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [placingOrder, setPlacingOrder] = useState(false);
   const [error, setError] = useState('');
@@ -1588,9 +2382,8 @@ export default function App() {
 
   // Auth States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
-    const savedUser = localStorage.getItem('atelimarket_user');
-    const user = savedUser ? JSON.parse(savedUser) : null;
-    return localStorage.getItem('atelimarket_admin') === 'true' && user?.role === 'admin';
+    const user = getSessionUser();
+    return sessionStorage.getItem('velqra_admin') === 'true' && user?.role === 'admin';
   });
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -1599,28 +2392,37 @@ export default function App() {
   const [registerPassword, setRegisterPassword] = useState('');
 
   const [isUserLoggedIn, setIsUserLoggedIn] = useState(() => {
-    return Boolean(localStorage.getItem('atelimarket_user_token'));
+    return Boolean(sessionStorage.getItem('velqra_user_token'));
   });
   const [currentUser, setCurrentUser] = useState(() => {
-    const savedUser = localStorage.getItem('atelimarket_user');
-    return savedUser ? JSON.parse(savedUser) : null;
+    return getSessionUser();
   });
   const [userAuthMode, setUserAuthMode] = useState('login');
 
   useEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [location.pathname]);
+
+  useEffect(() => {
     const syncUserAuthState = () => {
-      const savedUser = localStorage.getItem('atelimarket_user');
-      setIsUserLoggedIn(Boolean(localStorage.getItem('atelimarket_user_token')));
-      setCurrentUser(savedUser ? JSON.parse(savedUser) : null);
+      setIsUserLoggedIn(Boolean(sessionStorage.getItem('velqra_user_token')));
+      setCurrentUser(getSessionUser());
     };
 
-    window.addEventListener('atelimarket-auth-change', syncUserAuthState);
+    window.addEventListener('velqra-auth-change', syncUserAuthState);
     window.addEventListener('storage', syncUserAuthState);
 
     return () => {
-      window.removeEventListener('atelimarket-auth-change', syncUserAuthState);
+      window.removeEventListener('velqra-auth-change', syncUserAuthState);
       window.removeEventListener('storage', syncUserAuthState);
     };
+  }, []);
+
+  useEffect(() => {
+    ['velqra_user', 'velqra_user_token', 'velqra_token', 'velqra_admin', 'velqra_cart'].forEach(key => {
+      localStorage.removeItem(key);
+    });
   }, []);
 
   // Registration Fields
@@ -1630,7 +2432,8 @@ export default function App() {
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [regStep, setRegStep] = useState('form');
-  const [regOtp, setRegOtp] = useState('');
+  const [regEmailOtp, setRegEmailOtp] = useState('');
+  const [regSmsOtp, setRegSmsOtp] = useState('');
   const [regTimer, setRegTimer] = useState(0);
   const [regResendDisabled, setRegResendDisabled] = useState(false);
 
@@ -1647,6 +2450,8 @@ export default function App() {
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [isOrderOTPModalOpen, setIsOrderOTPModalOpen] = useState(false);
+  const [pendingOrderData, setPendingOrderData] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('cod');
   const [deliveryForm, setDeliveryForm] = useState({
     fullName: '',
@@ -1712,10 +2517,10 @@ export default function App() {
 
   useEffect(() => {
     const verifyAdminSession = async () => {
-      const token = localStorage.getItem('atelimarket_token');
+      const token = sessionStorage.getItem('velqra_token');
       if (!token) {
         setIsAdminLoggedIn(false);
-        localStorage.removeItem('atelimarket_admin');
+        sessionStorage.removeItem('velqra_admin');
         return;
       }
 
@@ -1726,16 +2531,16 @@ export default function App() {
         const isAdmin = res.data.success && res.data.user?.role === 'admin';
         setIsAdminLoggedIn(isAdmin);
         if (isAdmin) {
-          localStorage.setItem('atelimarket_admin', 'true');
-          localStorage.setItem('atelimarket_user', JSON.stringify(res.data.user));
+          sessionStorage.setItem('velqra_admin', 'true');
+          sessionStorage.setItem('velqra_user', JSON.stringify(res.data.user));
           setCurrentUser(res.data.user);
         } else {
-          localStorage.removeItem('atelimarket_admin');
+          sessionStorage.removeItem('velqra_admin');
         }
       } catch {
         setIsAdminLoggedIn(false);
-        localStorage.removeItem('atelimarket_admin');
-        localStorage.removeItem('atelimarket_token');
+        sessionStorage.removeItem('velqra_admin');
+        sessionStorage.removeItem('velqra_token');
       }
     };
 
@@ -1843,53 +2648,10 @@ export default function App() {
     return 20;
   };
 
-  const generateWhatsAppMessage = (orderId, cartItems, total, deliveryCharge, delivery) => {
-    const itemsList = cartItems.map((item, index) => {
-      let line = `  ${index + 1}. ${item.name} × ${item.qty} = ₹${item.price * item.qty}`;
-      if (item.selectedAttributes && Object.keys(item.selectedAttributes).length > 0) {
-        const attrs = Object.entries(item.selectedAttributes)
-          .filter(([k, v]) => v)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(', ');
-        line += ` (${attrs})`;
-      }
-      if (item.originalPrice > item.price) {
-        line += ` (₹${item.originalPrice} - ${item.discountPercent}% OFF)`;
-      }
-      return line;
-    }).join('\n');
-
-    const totalSavings = cartItems.reduce((sum, item) => {
-      return sum + ((item.originalPrice - item.price) * item.qty);
-    }, 0);
-
-    return `🏷️ *VELQRA Order Payment*
-
-🛒 *Order Details:*
-${itemsList}
-
-📦 *Total Items:* ${cartItems.length}
-💳 *Order Total:* ₹${total}
-${deliveryCharge > 0 ? `🚚 *Delivery Charge:* ₹${deliveryCharge}` : '🎉 *Free Delivery*'}
-${totalSavings > 0 ? `💰 *You Saved:* ₹${totalSavings}` : ''}
-
-📋 *Order ID:* #${orderId.slice(-8).toUpperCase()}
-👤 *Customer:* ${delivery.fullName || 'Guest'}
-📱 *Phone:* ${delivery.phone || ''}
-📍 *Address:* ${delivery.address || ''}, ${delivery.city || ''}, ${delivery.state || ''} - ${delivery.pincode || ''}
-
-💳 *Payment Details:*
-UPI ID: 9050054177@fam
-Amount: ₹${total}
-
-📝 Please send payment screenshot after payment.
-🙏 Thank you for shopping at VELQRA!`;
-  };
-
   const handlePlaceOrder = async (e) => {
     e.preventDefault();
 
-    const token = localStorage.getItem('atelimarket_user_token');
+    const token = sessionStorage.getItem('velqra_user_token');
     if (!token) {
       showToast('Please login to place order', 'error');
       setIsAuthModalOpen(true);
@@ -1939,7 +2701,9 @@ Amount: ₹${total}
         originalPrice: item.originalPrice || 0,
         discountPercent: item.discountPercent || 0,
         category: item.category || '',
-        selectedAttributes: item.selectedAttributes || {}
+        selectedAttributes: item.selectedAttributes || {},
+        promoApplied: item.promoApplied === true,
+        promoCode: item.promoApplied ? item.promoCode : ''
       })),
       total: finalTotal,
       paymentMethod: paymentMethod,
@@ -1958,29 +2722,151 @@ Amount: ₹${total}
       }
     };
 
+        // ✅ Online payment — OTP skip, direct PayU redirect
+    if (paymentMethod === 'online') {
+      try {
+        setPlacingOrder(true);
+        const token = sessionStorage.getItem('velqra_user_token');
+
+        // 1. Order create karo (no OTP token needed)
+        const response = await axios.post(
+          `${API_URL}/orders`,
+          { ...orderData, skipOTP: true },   // 👈 skipOTP flag backend ke liye
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            }
+          }
+        );
+
+        if (!response.data.success) {
+          showToast(response.data.message || 'Failed to place order', 'error');
+          setPlacingOrder(false);
+          return;
+        }
+
+        const orderId = response.data.order._id;
+
+        // 2. Cart clear karo
+        setCart([]);
+        setIsCartOpen(false);
+        resetCheckout();
+        fetchOrders();
+
+        // 3. PayU redirect
+        showToast('🔒 Redirecting to PayU secure payment...', 'info');
+        const payuRes = await axios.post(
+          `${API_URL}/payment/payu/initiate`,
+          { orderId },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        if (!payuRes.data.success) {
+          showToast('Payment initiation failed. Check My Orders.', 'error');
+          setTimeout(() => navigate('/orders'), 1500);
+          return;
+        }
+
+        const { paymentUrl, params } = payuRes.data;
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = getPayUPaymentUrl(paymentUrl);
+        Object.entries(params).forEach(([k, v]) => {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = k;
+          inp.value = v;
+          form.appendChild(inp);
+        });
+        document.body.appendChild(form);
+        form.submit();
+        return;
+      } catch (err) {
+        showToast(err.response?.data?.message || 'Failed to place order. Please try again.', 'error');
+        setPlacingOrder(false);
+        return;
+      }
+    }
+
+    // ✅ COD — OTP modal open karo (existing flow)
+    setPendingOrderData({
+      orderData,
+      finalTotal,
+      deliveryCharge,
+      cartSnapshot: [...cart]
+    });
+    setIsOrderOTPModalOpen(true);
+  };
+
+    // 🆕 OTP verify hone ke baad actual order place + PayU redirect
+  const handleVerifyOrderOTP = async (orderConfirmToken) => {
+    if (!pendingOrderData) {
+      showToast('Missing order data', 'error');
+      setIsOrderOTPModalOpen(false);
+      return;
+    }
+    const { orderData, finalTotal, deliveryCharge, cartSnapshot } = pendingOrderData;
+
     try {
       setPlacingOrder(true);
-
-      const response = await axios.post(`${API_URL}/orders`, orderData, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+      const token = sessionStorage.getItem('velqra_user_token');
+      const response = await axios.post(
+        `${API_URL}/orders`,
+        { ...orderData, orderConfirmToken },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
         }
-      });
+      );
 
       if (response.data.success) {
         const orderId = response.data.order._id;
 
         setCart([]);
-        localStorage.removeItem('atelimarket_cart');
         setIsCartOpen(false);
+        setIsOrderOTPModalOpen(false);
+        setPendingOrderData(null);
         resetCheckout();
         fetchOrders();
 
         if (paymentMethod === 'online') {
-          showToast('✅ Order placed! Please complete payment via WhatsApp UPI.', 'success');
-          const whatsappMessage = generateWhatsAppMessage(orderId, cart, finalTotal, deliveryCharge, deliveryForm);
-          window.open(`https://wa.me/919050054177?text=${encodeURIComponent(whatsappMessage)}`, '_blank');
+          showToast('🔒 Redirecting to PayU secure payment...', 'info');
+          try {
+            const payuRes = await axios.post(
+              `${API_URL}/payment/payu/initiate`,
+              { orderId },
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+
+            if (!payuRes.data.success) {
+              showToast('Payment initiation failed. Order placed — check My Orders.', 'error');
+              setTimeout(() => navigate('/orders'), 1500);
+              return;
+            }
+
+            const { paymentUrl, params } = payuRes.data;
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = getPayUPaymentUrl(paymentUrl);
+            Object.entries(params).forEach(([k, v]) => {
+              const inp = document.createElement('input');
+              inp.type = 'hidden';
+              inp.name = k;
+              inp.value = v;
+              form.appendChild(inp);
+            });
+            document.body.appendChild(form);
+            form.submit();
+            return;
+          } catch (payuErr) {
+            showToast('Payment could not be initiated. Check My Orders.', 'error');
+            setTimeout(() => navigate('/orders'), 2000);
+            return;
+          }
         } else {
           showToast('✅ Order placed successfully! Cash on delivery selected.', 'success');
         }
@@ -1992,15 +2878,15 @@ Amount: ₹${total}
         showToast(response.data.message || 'Failed to place order', 'error');
       }
     } catch (err) {
-      console.error('❌ Order error:', err);
       showToast(err.response?.data?.message || 'Failed to place order. Please try again.', 'error');
     } finally {
       setPlacingOrder(false);
     }
   };
 
+
   const handleVerifyPayment = async (orderId) => {
-    const token = localStorage.getItem('atelimarket_user_token');
+    const token = sessionStorage.getItem('velqra_user_token');
     if (!token) {
       showToast('Please login', 'error');
       return;
@@ -2026,7 +2912,6 @@ Amount: ₹${total}
         showToast(response.data.message || 'Failed to verify payment', 'error');
       }
     } catch (err) {
-      console.error('Error verifying payment:', err);
       showToast(err.response?.data?.message || 'Failed to verify payment', 'error');
     }
   };
@@ -2045,21 +2930,10 @@ Amount: ₹${total}
 
       if (error) throw error;
 
-      const productsData = (data || []).map((product) => ({
-        ...product,
-        _id: product._id || product.id,
-        originalPrice: Number(product.originalPrice ?? product.original_price ?? product.originalPrice ?? 0),
-        discountPercent: Number(product.discountPercent ?? product.discount_percent ?? 0),
-        price: Number(
-          product.price ??
-          (Number(product.original_price ?? product.originalPrice ?? 0) *
-            (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100))
-        )
-      }));
+      const productsData = (data || []).map(normalizeProduct);
       setProducts(productsData);
       localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(productsData));
     } catch (err) {
-      console.error('Error fetching products:', err);
       showToast('Failed to load products from Supabase', 'error');
     } finally {
       setLoading(false);
@@ -2070,8 +2944,77 @@ Amount: ₹${total}
     fetchProducts();
   }, []);
 
+  const syncGuestCart = async (token) => {
+    if (!token || cart.length === 0) return;
+
+    try {
+      const { data: currentCart } = await axios.get(`${API_URL}/cart`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const existingItems = normalizeCart(currentCart.cart?.items || []);
+      const mergedItems = [...existingItems];
+
+      cart.forEach(item => {
+        const key = `${item._id}:${JSON.stringify(item.selectedAttributes || {})}:${String(item.promoApplied ? item.promoCode : '').toUpperCase()}`;
+        const existing = mergedItems.find(candidate =>
+          `${candidate._id}:${JSON.stringify(candidate.selectedAttributes || {})}:${String(candidate.promoApplied ? candidate.promoCode : '').toUpperCase()}` === key
+        );
+        if (existing) {
+          existing.qty = Math.min(existing.stock || item.stock, existing.qty + item.qty);
+        } else {
+          mergedItems.push(item);
+        }
+      });
+
+      const { data } = await axios.post(`${API_URL}/cart/sync`, {
+        items: mergedItems.map(item => ({
+          _id: item._id,
+          qty: item.qty,
+          selectedAttributes: item.selectedAttributes || {},
+          promoCode: item.promoApplied ? item.promoCode : ''
+        }))
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!data.success) throw new Error(data.message || 'Unable to save cart');
+      setCart(normalizeCart(data.cart?.items || []));
+    } catch (cartError) {
+      showToast('Your account was signed in, but the cart could not be synced.', 'error');
+    }
+  };
+
+  const queueCartMutation = (operation) => {
+    cartMutationQueue.current = cartMutationQueue.current.then(operation, operation);
+    return cartMutationQueue.current;
+  };
+
+  useEffect(() => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (!isUserLoggedIn || !token) {
+      setCart([]);
+      setCartLoading(false);
+      return;
+    }
+
+    let active = true;
+    setCartLoading(true);
+    axios.get(`${API_URL}/cart`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(({ data }) => {
+      if (active && data.success) setCart(normalizeCart(data.cart?.items || []));
+    }).catch(cartError => {
+      if (!active) return;
+      showToast('Unable to load your saved cart.', 'error');
+    }).finally(() => {
+      if (active) setCartLoading(false);
+    });
+
+    return () => { active = false; };
+  }, [isUserLoggedIn]);
+
   const fetchOrders = async () => {
-    const token = localStorage.getItem('atelimarket_user_token');
+    const token = sessionStorage.getItem('velqra_user_token');
     if (!token) return;
 
     setOrdersLoading(true);
@@ -2087,7 +3030,6 @@ Amount: ₹${total}
         setPendingPaymentOrders(pending);
       }
     } catch (err) {
-      console.error(err);
     } finally {
       setOrdersLoading(false);
     }
@@ -2098,10 +3040,6 @@ Amount: ₹${total}
       fetchOrders();
     }
   }, [isUserLoggedIn]);
-
-  useEffect(() => {
-    localStorage.setItem('atelimarket_cart', JSON.stringify(cart));
-  }, [cart]);
 
   useEffect(() => {
     setDeliveryForm(prev => ({
@@ -2129,7 +3067,7 @@ Amount: ₹${total}
   }, []);
 
   // Register - Step 1: Send OTP
-  const handleSendRegistrationOTP = async (e) => {
+    const handleSendRegistrationOTP = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
@@ -2140,21 +3078,22 @@ Amount: ₹${total}
       return;
     }
 
-    if (regPassword.length < 6) {
-      setError('Password must be at least 6 characters long');
+    if (regPassword.length < 8 || regPassword.length > 72) {
+      setError('Password must be at least 8 characters long');
+      setLoading(false);
+      return;
+    }
+
+    const normalizedEmail = regEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setError('Enter a valid email address');
       setLoading(false);
       return;
     }
 
     const normalizedPhone = String(regPhone).replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
-    const normalizedEmail = regEmail.trim().toLowerCase();
     if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      setError('Please enter a valid 10-digit phone number');
-      setLoading(false);
-      return;
-    }
-    if (!/^[a-z0-9._%+-]+@gmail\.com$/i.test(normalizedEmail)) {
-      setError('Please enter a valid Gmail address');
+      setError('Please enter a valid 10-digit mobile number');
       setLoading(false);
       return;
     }
@@ -2171,7 +3110,14 @@ Amount: ₹${total}
       if (res.data.success) {
         setRegStep('otp');
         startRegTimer();
-        showToast('✅ OTP sent to your email!', 'success');
+        // 🧪 Test mode: OTP response mein aa jayega
+        if (res.data.emailOtp || res.data.smsOtp) {
+          setRegEmailOtp(res.data.emailOtp || '');
+          setRegSmsOtp(res.data.smsOtp || '');
+          showToast('🧪 Local test mode: verification codes auto-filled.', 'info');
+        } else {
+          showToast('✅ Verification codes sent to your email and mobile!', 'success');
+        }
       } else {
         setError(res.data.message);
       }
@@ -2182,30 +3128,35 @@ Amount: ₹${total}
     }
   };
 
-  // Register - Step 2: Verify OTP
+    // Register - Step 2: Verify OTP (SMS only)
   const handleVerifyRegistrationOTP = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    if (regOtp.length < 6) {
-      setError('Please enter the 6-digit OTP');
+    if (regEmailOtp.length !== 6 || regSmsOtp.length !== 6) {
+      setError('Enter both 6-digit verification codes');
       setLoading(false);
       return;
     }
 
     try {
+      const normalizedPhone = String(regPhone).replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
       const res = await axios.post(`${AUTH_URL}/verify-registration`, {
-        email: regEmail.trim().toLowerCase(),
-        otp: regOtp.trim()
+        phone: normalizedPhone,
+        emailOtp: regEmailOtp.trim(),
+        smsOtp: regSmsOtp.trim()
       });
 
       if (res.data.success) {
         const userData = res.data.user;
+        const token = res.data.token;
+        await syncGuestCart(token);
         setCurrentUser(userData);
         setIsUserLoggedIn(true);
-        localStorage.setItem('atelimarket_user', JSON.stringify(userData));
-        localStorage.setItem('atelimarket_user_token', res.data.token);
+        sessionStorage.setItem('velqra_user', JSON.stringify(userData));
+        sessionStorage.setItem('velqra_user_token', token);
+        window.dispatchEvent(new Event('velqra-auth-change'));
         setRegStep('success');
         setIsAuthModalOpen(false);
         showToast('✅ Registration completed successfully!', 'success');
@@ -2215,7 +3166,8 @@ Amount: ₹${total}
         setRegPhone('');
         setRegPassword('');
         setRegConfirmPassword('');
-        setRegOtp('');
+        setRegEmailOtp('');
+        setRegSmsOtp('');
         setRegStep('form');
         setUserAuthMode('login');
       } else {
@@ -2228,19 +3180,28 @@ Amount: ₹${total}
     }
   };
 
+
   // Resend Registration OTP
+    // Resend Registration OTP (SMS only)
   const handleResendRegistrationOTP = async () => {
     setLoading(true);
     setError('');
 
     try {
+      const normalizedPhone = String(regPhone).replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
       const res = await axios.post(`${AUTH_URL}/resend-registration-otp`, {
-        email: regEmail.trim().toLowerCase()
+        phone: normalizedPhone
       });
 
       if (res.data.success) {
         startRegTimer();
-        showToast('✅ OTP resent successfully!', 'success');
+        if (res.data.emailOtp || res.data.smsOtp) {
+          setRegEmailOtp(res.data.emailOtp || '');
+          setRegSmsOtp(res.data.smsOtp || '');
+          showToast('🧪 Local test mode: verification codes auto-filled.', 'info');
+        } else {
+          showToast('✅ Verification codes resent!', 'success');
+        }
       } else {
         setError(res.data.message);
       }
@@ -2265,14 +3226,16 @@ Amount: ₹${total}
 
       if (res.data.success) {
         const userData = res.data.user;
+        await syncGuestCart(res.data.token);
         setCurrentUser(userData);
         setIsUserLoggedIn(true);
-        localStorage.setItem('atelimarket_user', JSON.stringify(userData));
-        localStorage.setItem('atelimarket_user_token', res.data.token);
+        sessionStorage.setItem('velqra_user', JSON.stringify(userData));
+        sessionStorage.setItem('velqra_user_token', res.data.token);
+        window.dispatchEvent(new Event('velqra-auth-change'));
         if (userData.role === 'admin') {
           setIsAdminLoggedIn(true);
-          localStorage.setItem('atelimarket_admin', 'true');
-          localStorage.setItem('atelimarket_token', res.data.token);
+          sessionStorage.setItem('velqra_admin', 'true');
+          sessionStorage.setItem('velqra_token', res.data.token);
           navigate('/admin');
         }
         setUserEmail('');
@@ -2293,10 +3256,11 @@ Amount: ₹${total}
     setIsUserLoggedIn(false);
     setCurrentUser(null);
     setIsAdminLoggedIn(false);
-    localStorage.removeItem('atelimarket_user');
-    localStorage.removeItem('atelimarket_user_token');
-    localStorage.removeItem('atelimarket_token');
-    localStorage.removeItem('atelimarket_admin');
+    sessionStorage.removeItem('velqra_user');
+    sessionStorage.removeItem('velqra_user_token');
+    sessionStorage.removeItem('velqra_token');
+    sessionStorage.removeItem('velqra_admin');
+    window.dispatchEvent(new Event('velqra-auth-change'));
     showToast('👋 Logged out', 'info');
   };
 
@@ -2314,10 +3278,12 @@ Amount: ₹${total}
         }
 
         setIsAdminLoggedIn(true);
-        localStorage.setItem('atelimarket_admin', 'true');
-        localStorage.setItem('atelimarket_token', res.data.token);
-        localStorage.setItem('atelimarket_user', JSON.stringify(res.data.user));
-        localStorage.setItem('atelimarket_user_token', res.data.token);
+        await syncGuestCart(res.data.token);
+        sessionStorage.setItem('velqra_admin', 'true');
+        sessionStorage.setItem('velqra_token', res.data.token);
+        sessionStorage.setItem('velqra_user', JSON.stringify(res.data.user));
+        sessionStorage.setItem('velqra_user_token', res.data.token);
+        window.dispatchEvent(new Event('velqra-auth-change'));
         setCurrentUser(res.data.user);
         setIsUserLoggedIn(true);
         setShowAdminAuth(false);
@@ -2358,13 +3324,19 @@ Amount: ₹${total}
 
   const handleAdminLogout = () => {
     setIsAdminLoggedIn(false);
-    localStorage.removeItem('atelimarket_admin');
-    localStorage.removeItem('atelimarket_token');
+    sessionStorage.removeItem('velqra_admin');
+    sessionStorage.removeItem('velqra_token');
+    sessionStorage.removeItem('velqra_user');
+    sessionStorage.removeItem('velqra_user_token');
+    setCurrentUser(null);
+    setIsUserLoggedIn(false);
+    setCart([]);
+    window.dispatchEvent(new Event('velqra-auth-change'));
     showToast('👋 Admin Logged out', 'info');
   };
 
   const handleOrderStatusChange = async (orderId, status) => {
-    const token = localStorage.getItem('atelimarket_user_token');
+    const token = sessionStorage.getItem('velqra_user_token');
     try {
       const res = await axios.patch(`${API_URL}/orders/${orderId}/status`, { status }, {
         headers: { Authorization: `Bearer ${token}` }
@@ -2435,7 +3407,7 @@ Amount: ₹${total}
 
     setLoading(true);
     try {
-      const token = localStorage.getItem('atelimarket_token');
+      const token = sessionStorage.getItem('velqra_token');
       const res = await axios.post(`${API_URL}/products/add`, productData, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -2478,7 +3450,7 @@ Amount: ₹${total}
     if (window.confirm('Delete this product?')) {
       setLoading(true);
       try {
-        const token = localStorage.getItem('atelimarket_token');
+        const token = sessionStorage.getItem('velqra_token');
         await axios.delete(`${API_URL}/products/delete/${id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
@@ -2497,13 +3469,44 @@ Amount: ₹${total}
     }
   };
 
-  const addToCart = (product) => {
+  const addToCart = async (product) => {
     if (product.stock <= 0) {
       showToast('Out of stock!', 'error');
       return;
     }
+
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (token) {
+      setCartLoading(true);
+      try {
+        await queueCartMutation(async () => {
+          const { data } = await axios.post(`${API_URL}/cart/add`, {
+            productId: product._id,
+            qty: 1,
+            selectedAttributes: product.selectedAttributes || {},
+            promoCode: product.promoApplied ? product.promoCode : ''
+          }, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!data.success) throw new Error(data.message || 'Unable to add product to cart');
+          setCart(normalizeCart(data.cart?.items || []));
+        });
+        showToast('✅ Added to your saved cart', 'success');
+      } catch (cartError) {
+        showToast(cartError.response?.data?.message || 'Could not add product to cart', 'error');
+      } finally {
+        setCartLoading(false);
+      }
+      return;
+    }
+
     setCart(prev => {
-      const exists = prev.find(item => item._id === product._id);
+      const exists = prev.find(item =>
+        item._id === product._id &&
+        JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(product.selectedAttributes || {}) &&
+        String(item.promoApplied ? item.promoCode : '').toUpperCase() ===
+          String(product.promoApplied ? product.promoCode : '').toUpperCase()
+      );
       if (exists) {
         if (exists.qty >= product.stock) {
           showToast('Not enough stock', 'error');
@@ -2518,10 +3521,47 @@ Amount: ₹${total}
     });
   };
 
-  const updateQty = (id, change) => {
+  const updateQty = (cartItem, change) => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (token) {
+      queueCartMutation(async () => {
+        const { data: current } = await axios.get(`${API_URL}/cart`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const currentItem = normalizeCart(current.cart?.items || []).find(item =>
+          item._id === cartItem._id &&
+          JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(cartItem.selectedAttributes || {}) &&
+          String(item.promoCode || '').toUpperCase() === String(cartItem.promoCode || '').toUpperCase()
+        );
+        if (!currentItem) return;
+        const qty = Math.max(0, currentItem.qty + change);
+        if (qty > currentItem.stock) {
+          showToast('Not enough stock', 'error');
+          return;
+        }
+        const { data } = await axios.put(`${API_URL}/cart/update/${cartItem._id}`, {
+          qty,
+          selectedAttributes: currentItem.selectedAttributes || {},
+          promoCode: currentItem.promoCode || ''
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!data.success) throw new Error(data.message || 'Unable to update cart');
+        setCart(normalizeCart(data.cart?.items || []));
+      }).catch(cartError => {
+        showToast(cartError.response?.data?.message || 'Could not update cart', 'error');
+      });
+      return;
+    }
+
     setCart(prev =>
       prev.map(item => {
-        if (item._id === id) {
+        if (
+          item._id === cartItem._id &&
+          JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(cartItem.selectedAttributes || {}) &&
+          String(item.promoApplied ? item.promoCode : '').toUpperCase() ===
+            String(cartItem.promoApplied ? cartItem.promoCode : '').toUpperCase()
+        ) {
           const newQty = item.qty + change;
           if (newQty > item.stock) {
             showToast('Not enough stock', 'error');
@@ -2688,7 +3728,7 @@ Amount: ₹${total}
         {location.pathname === '/' && isMobileMenuOpen && (
           <>
             <nav
-              className="absolute left-[-12px] right-[-12px] top-full z-[42] flex h-[calc(100vh-68px)] flex-col bg-[#fdfcf9] md:hidden"
+              className="velqra-mobile-nav absolute left-[-12px] right-[-12px] top-full z-[42] flex flex-col bg-[#fdfcf9] md:hidden"
               style={{ backgroundColor: '#fdfcf9', color: '#173b32' }}
               aria-label="Mobile navigation"
             >
@@ -2709,7 +3749,7 @@ Amount: ₹${total}
                 {[
                   ['Shop', '/'],
                   ['Face Wash', '/#products'],
-                  ['Track Order', '/orders']
+                  ['Orders', '/orders']
                 ].map(([label, to]) => (
                   <Link
                     key={label}
@@ -2728,7 +3768,7 @@ Amount: ₹${total}
                   }}
                   className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
                 >
-                  Store{totalCartItems > 0 ? ` (${totalCartItems})` : ''}
+                  Cart{totalCartItems > 0 ? ` (${totalCartItems})` : ''}
                 </button>
                 <div className="pt-5">
                   <button
@@ -2801,7 +3841,7 @@ Amount: ₹${total}
                   }}
                   className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
                 >
-                  {isUserLoggedIn ? 'Logout' : 'Account'}
+                  {isUserLoggedIn ? 'Logout' : 'Login'}
                 </button>
               </div>
             </nav>
@@ -2810,7 +3850,7 @@ Amount: ₹${total}
       </header>
 
       {/* MAIN CONTENT */}
-      <div className="flex-1">
+      <div className="flex-1 bg-[#f1f1ef] text-[#171717]">
         <Routes>
           <Route path="/" element={
             <>
@@ -3353,6 +4393,7 @@ Amount: ₹${total}
               <Navigate to="/admin/login" replace />
             )
           } />
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </div>
 
@@ -3401,7 +4442,8 @@ Amount: ₹${total}
                     required
                     value={userEmail}
                     onChange={(e) => setUserEmail(e.target.value)}
-                    placeholder="Mobile Number or Gmail"
+                    autoComplete="username"
+                    placeholder="Email address or mobile number"
                     className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
                   />
                   <input
@@ -3443,7 +4485,8 @@ Amount: ₹${total}
                       setRegPhone('');
                       setRegPassword('');
                       setRegConfirmPassword('');
-                      setRegOtp('');
+                      setRegEmailOtp('');
+                      setRegSmsOtp('');
                     }}
                     className="font-bold text-[#0B3C5D] hover:underline"
                   >
@@ -3465,7 +4508,7 @@ Amount: ₹${total}
               // REGISTER - Step 1: Form
               <>
                 <h3 className="text-lg font-black text-[#0B3C5D] mb-1">Create Account</h3>
-                <p className="text-[11px] text-slate-400 mb-4">Fill details to register. OTP will be sent to your email.</p>
+                <p className="text-[11px] text-slate-400 mb-4">Fill details to register. OTP will be sent to your mobile.</p>
 
                 {error && (
                   <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-4 py-2 rounded-xl mb-4">
@@ -3474,54 +4517,84 @@ Amount: ₹${total}
                 )}
 
                 <form onSubmit={handleSendRegistrationOTP} className="space-y-3">
-                  <input
-                    type="text"
-                    required
-                    value={regName}
-                    onChange={(e) => setRegName(e.target.value)}
-                    placeholder="Full Name *"
-                    className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                  />
-                  <input
-                    type="email"
-                    required
-                    value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    onBlur={(e) => setRegEmail(e.target.value.trim().toLowerCase())}
-                    placeholder="Email *"
-                    className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                  />
-                  <input
-                    type="tel"
-                    required
-                    value={regPhone}
-                    onChange={(e) => setRegPhone(e.target.value.replace(/\D/g, ''))}
-                    placeholder="Phone Number (10 digits) *"
-                    maxLength="10"
-                    className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                  />
-                  <input
-                    type="password"
-                    required
-                    value={regPassword}
-                    onChange={(e) => setRegPassword(e.target.value)}
-                    placeholder="Password (min 6 chars) *"
-                    className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                  />
-                  <input
-                    type="password"
-                    required
-                    value={regConfirmPassword}
-                    onChange={(e) => setRegConfirmPassword(e.target.value)}
-                    placeholder="Confirm Password *"
-                    className="w-full bg-slate-50 border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
-                  />
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Full name
+                    <input
+                      type="text"
+                      autoComplete="name"
+                      required
+                      maxLength={100}
+                      value={regName}
+                      onChange={(e) => setRegName(e.target.value)}
+                      placeholder="Your full name"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Email address
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      inputMode="email"
+                      required
+                      maxLength={254}
+                      value={regEmail}
+                      onChange={(e) => setRegEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Mobile number
+                    <input
+                      type="tel"
+                      autoComplete="tel-national"
+                      inputMode="numeric"
+                      required
+                      value={regPhone}
+                      onChange={(e) => setRegPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      placeholder="10-digit mobile number"
+                      maxLength={10}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Password
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      required
+                      minLength={8}
+                      maxLength={72}
+                      value={regPassword}
+                      onChange={(e) => setRegPassword(e.target.value)}
+                      placeholder="At least 8 characters"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Confirm password
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      required
+                      minLength={8}
+                      maxLength={72}
+                      value={regConfirmPassword}
+                      onChange={(e) => setRegConfirmPassword(e.target.value)}
+                      placeholder="Enter your password again"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    We’ll verify that you own both your email address and mobile number.
+                  </p>
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-sm hover:bg-[#07263b] disabled:opacity-50"
+                    className="w-full rounded-xl bg-[#173b32] py-3.5 text-sm font-bold text-white transition-colors hover:bg-[#102a24] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {loading ? '⏳ Sending OTP...' : 'Send OTP'}
+                    {loading ? 'Sending verification codes…' : 'Verify email & mobile'}
                   </button>
                 </form>
 
@@ -3539,14 +4612,14 @@ Amount: ₹${total}
                 </div>
               </>
             ) : regStep === 'otp' ? (
-              // REGISTER - Step 2: OTP Verification
+              // REGISTER - Step 2: Verify email and mobile
               <>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-2xl">📧</span>
-                  <h3 className="text-lg font-black text-[#0B3C5D]">Verify Email</h3>
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="text-2xl">🔐</span>
+                  <h3 className="text-lg font-black text-white">Verify your email and mobile</h3>
                 </div>
                 <p className="text-[11px] text-slate-400 mb-4">
-                  Enter the OTP sent to <strong>{regEmail}</strong>
+                  Enter the separate 6-digit codes sent to <strong>{regEmail}</strong> and mobile ending in <strong>{regPhone.slice(-4)}</strong>.
                 </p>
 
                 {error && (
@@ -3556,15 +4629,33 @@ Amount: ₹${total}
                 )}
 
                 <form onSubmit={handleVerifyRegistrationOTP} className="space-y-4">
+                  <label className="block text-xs font-semibold text-white">
+                    Email verification code
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      required
+                      maxLength={6}
+                      value={regEmailOtp}
+                      onChange={(e) => setRegEmailOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="6-digit email code"
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-base font-bold tracking-[0.3em] text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold text-white">
+                    Mobile verification code
                   <input
                     type="text"
+                    inputMode="numeric"
                     required
-                    maxLength="6"
-                    value={regOtp}
-                    onChange={(e) => setRegOtp(e.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter 6-digit OTP"
-                    className="w-full bg-slate-50 border px-4 py-3 rounded-xl text-sm text-center text-2xl font-bold tracking-widest focus:outline-none focus:border-[#0B3C5D]"
+                    maxLength={6}
+                    value={regSmsOtp}
+                    onChange={(e) => setRegSmsOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="6-digit SMS code"
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-base font-bold tracking-[0.3em] text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
                   />
+                  </label>
 
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-400">
@@ -3582,7 +4673,7 @@ Amount: ₹${total}
 
                   <button
                     type="submit"
-                    disabled={loading || regOtp.length < 6}
+                    disabled={loading || regEmailOtp.length !== 6 || regSmsOtp.length !== 6}
                     className="w-full bg-green-600 text-white font-bold py-3 rounded-xl text-sm hover:bg-green-700 disabled:opacity-50"
                   >
                     {loading ? '⏳ Verifying...' : '✅ Verify & Register'}
@@ -3617,6 +4708,16 @@ Amount: ₹${total}
           setIsAuthModalOpen(true);
           setUserAuthMode('login');
         }}
+      />
+
+            {/* 🆕 ORDER OTP MODAL */}
+      <OrderOTPModal
+        isOpen={isOrderOTPModalOpen}
+        onClose={() => {
+          setIsOrderOTPModalOpen(false);
+          setPendingOrderData(null);
+        }}
+        onVerified={handleVerifyOrderOTP}
       />
 
       {/* ADMIN AUTH MODAL */}
@@ -3660,7 +4761,7 @@ Amount: ₹${total}
                   required
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
-                  placeholder="admin@atelimarket.com"
+                  placeholder="admin@velqra.com"
                   className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-xs focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
                 />
               </div>
@@ -3694,7 +4795,7 @@ Amount: ₹${total}
           onClick={() => setIsCartOpen(false)}
         >
           <div
-            className="bg-white w-full max-w-md h-full shadow-2xl p-6 flex flex-col"
+            className="velqra-cart-panel bg-white w-full max-w-md h-full shadow-2xl p-6 flex flex-col text-slate-900"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex-1 overflow-hidden flex flex-col">
@@ -3705,7 +4806,12 @@ Amount: ₹${total}
                 </button>
               </div>
 
-              {cart.length === 0 ? (
+              {cartLoading ? (
+                <div className="flex-1 flex flex-col items-center justify-center">
+                  <div className="mb-4 h-10 w-10 animate-spin rounded-full border-2 border-[#173b32]/15 border-t-[#173b32]" />
+                  <p className="text-sm font-medium text-slate-500">Loading your saved cart…</p>
+                </div>
+              ) : cart.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center">
                   <div className="text-6xl mb-4">🛍️</div>
                   <p className="text-slate-400 text-sm font-medium">Cart is empty</p>
@@ -3729,9 +4835,9 @@ Amount: ₹${total}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg p-1 flex-shrink-0">
-                        <button onClick={() => updateQty(item._id, -1)} className="px-2 py-0.5 font-bold text-slate-400 hover:text-[#FF5722] text-xs transition">−</button>
+                        <button onClick={() => updateQty(item, -1)} className="px-2 py-0.5 font-bold text-slate-400 hover:text-[#FF5722] text-xs transition">−</button>
                         <span className="text-xs font-bold w-6 text-center">{item.qty}</span>
-                        <button onClick={() => updateQty(item._id, 1)} className="px-2 py-0.5 font-bold text-slate-400 hover:text-[#0B3C5D] text-xs transition">+</button>
+                        <button onClick={() => updateQty(item, 1)} className="px-2 py-0.5 font-bold text-slate-400 hover:text-[#0B3C5D] text-xs transition">+</button>
                       </div>
                     </div>
                   ))}
@@ -3879,66 +4985,44 @@ Amount: ₹${total}
                           💵 Cash on Delivery
                         </button>
 
-                        <button
+                                                <button
                           type="button"
                           onClick={() => setPaymentMethod('online')}
                           className={`rounded-lg px-3 py-2 text-sm font-bold transition ${
                             paymentMethod === 'online'
-                              ? 'bg-[#25D366] text-white shadow-md'
+                              ? 'bg-blue-600 text-white shadow-md'
                               : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
                           }`}
                         >
                           <span className="flex items-center justify-center gap-1">
-                            <span>📱</span> WhatsApp Pay
+                            <span>🔒</span> Pay Online
                           </span>
                         </button>
                       </div>
 
-                      {paymentMethod === 'online' && (
-                        <div className="mt-3 space-y-2">
-                          <div className="rounded-xl border border-dashed border-[#25D366] bg-white p-3 text-center">
-                            <p className="text-[10px] font-bold uppercase text-slate-400">Pay via WhatsApp UPI</p>
-                            <img
-                              src={`https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl=upi://pay?pa=9050054177@fam&pn=VELQRA&am=${grandTotal}&cu=INR&tn=VELQRA%20Order`}
-                              alt="WhatsApp UPI QR"
-                              className="mx-auto my-2 w-36 h-36"
-                              onError={(e) => {
-                                e.target.onerror = null;
-                                e.target.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=upi://pay?pa=9050054177@fam&am=${grandTotal}&cu=INR`;
-                              }}
-                            />
-
-                            <div className="bg-green-50 rounded-lg p-3 border border-green-100">
-                              <p className="text-xs font-bold text-[#25D366]">📱 WhatsApp Number</p>
-                              <p className="text-sm font-black text-slate-800">9050054177</p>
-                              <p className="text-[10px] text-slate-500 mt-1">
-                                Send ₹{grandTotal} to this WhatsApp UPI ID
+                                            {paymentMethod === 'online' && (
+                        <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                          <div className="flex items-start gap-2">
+                            <span className="text-lg">🔒</span>
+                            <div>
+                              <p className="text-xs font-bold text-blue-700">Secure Payment via PayU</p>
+                              <p className="text-[10px] text-blue-600 mt-1 leading-relaxed">
+                                After placing the order, you will be redirected to PayU's secure payment page.
+                                Pay using UPI, Credit/Debit Card, Net Banking, or Wallet.
                               </p>
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const tempOrderId = 'ORDER-' + Date.now().toString(36).toUpperCase();
-                                const message = generateWhatsAppMessage(tempOrderId, cart, grandTotal, deliveryCharge, deliveryForm);
-                                window.open(`https://wa.me/919050054177?text=${encodeURIComponent(message)}`, '_blank');
-                              }}
-                              className="w-full bg-gradient-to-r from-[#25D366] to-[#128C7E] text-white font-bold py-3 rounded-xl text-sm hover:from-[#128C7E] hover:to-[#075E54] transition text-center flex items-center justify-center gap-2 shadow-md mt-3"
-                            >
-                              <span>💬</span> Pay via WhatsApp
-                            </button>
                           </div>
                         </div>
                       )}
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <button
+                                            <button
                         type="submit"
                         disabled={placingOrder}
                         className={`w-full font-bold py-3 rounded-xl text-sm transition flex items-center justify-center gap-2 ${
                           paymentMethod === 'online'
-                            ? 'bg-[#25D366] text-white hover:bg-[#128C7E]'
+                            ? 'bg-blue-600 text-white hover:bg-blue-700'
                             : 'bg-[#FF5722] text-white hover:bg-[#e64a19]'
                         } ${placingOrder ? 'opacity-50 cursor-not-allowed' : ''}`}
                       >
@@ -3946,10 +5030,10 @@ Amount: ₹${total}
                           <>
                             <span className="animate-spin">⏳</span> Processing...
                           </>
+                        ) : paymentMethod === 'online' ? (
+                          <>🔒 Place Order & Pay ₹{grandTotal} via PayU</>
                         ) : (
-                          <>
-                            {paymentMethod === 'online' ? `📱 Pay ₹${grandTotal} via WhatsApp & Confirm` : `📦 Place Order (₹${grandTotal})`}
-                          </>
+                          <>📦 Place Order (₹{grandTotal})</>
                         )}
                       </button>
 

@@ -2,16 +2,35 @@ services:
   - type: web
     name: atelimarket-backend
     env: node
-    buildCommand: cd backend && npm install
-    startCommand: cd backend && node index.js
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
     envVars:
       - key: PORT
         value: 10000
-      - key: MONGO_URI
-        value: mongodb+srv://gs8901346287_db_user:AteliMarketPass2026@cluster0.xsoz4jh.mongodb.net/atelimarket?retryWrites=true&w=majority
-      - key: JWT_SECRET
-        value: atelimarket_super_secret_key_2026
       - key: NODE_ENV
         value: production
-      - key: CLIENT_URL
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
         value: https://atelimarket.shop
+      - key: BACKEND_URL
+        value: https://atelimarket-backend.onrender.com
+      - key: FAST2SMS_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: SMS_TEST_MODE
+        value: "false"
+      - key: SMS_TEST_NUMBERS
+        value: ""
+      - key: PAYU_MERCHANT_KEY
+        sync: false
+      - key: PAYU_SALT
+        sync: false

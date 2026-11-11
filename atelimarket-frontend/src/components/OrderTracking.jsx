@@ -17,7 +17,7 @@ const OrderTracking = () => {
   const fetchOrderTracking = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('atelimarket_user_token');
+      const token = sessionStorage.getItem('velqra_user_token');
       
       const response = await axios.get(
         `${ORDERS_URL}/${orderId}/tracking`,
@@ -31,7 +31,6 @@ const OrderTracking = () => {
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to fetch order tracking');
-      console.error(err);
     } finally {
       setLoading(false);
     }

@@ -16,7 +16,7 @@ const OrdersPage = () => {
   const fetchOrders = async () => {
     try {
       setLoading(true);
-      const token = localStorage.getItem('atelimarket_user_token');
+      const token = sessionStorage.getItem('velqra_user_token');
       
       if (!token) {
         setError('Please login to view orders');
@@ -33,7 +33,6 @@ const OrdersPage = () => {
       }
     } catch (err) {
       setError('Failed to fetch orders');
-      console.error(err);
     } finally {
       setLoading(false);
     }

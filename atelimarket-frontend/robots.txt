@@ -1,5 +1,5 @@
-# AteliMarket Robots.txt
-# Optimized for AteliMarket search ranking
+# VELQRA Robots.txt
+# Optimized for VELQRA search ranking
 
 User-agent: *
 Allow: /

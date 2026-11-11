@@ -1,24 +1,13 @@
 // API Configuration
-const getBaseURL = () => {
-  // Production - Render backend URL
-  if (import.meta.env.PROD) {
-    return 'https://atelimarket-backend.onrender.com';
-  }
-  // Development
-  return 'http://localhost:5000';
-};
+const API_BASE = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD
+    ? 'https://atelimarket-backend.onrender.com/api'
+    : 'http://localhost:5000/api')
+).replace(/\/+$/, '');
+const BACKEND_ORIGIN = API_BASE.replace(/\/api$/, '');
 
-const API_BASE = getBaseURL();
-
-export const API_URL = `${API_BASE}/api/products`;
-export const AUTH_URL = `${API_BASE}/api/auth`;
-export const IMAGE_URL = `${API_BASE}/uploads`;
-export const ORDERS_URL = `${API_BASE}/api/orders`;
-
-// Log configuration in development
-if (import.meta.env.DEV) {
-  console.log('🔧 API Configuration:');
-  console.log(`📡 API_BASE: ${API_BASE}`);
-  console.log(`📦 API_URL: ${API_URL}`);
-  console.log(`🔐 AUTH_URL: ${AUTH_URL}`);
-}
+export const API_URL = `${API_BASE}/products`;
+export const AUTH_URL = (import.meta.env.VITE_AUTH_URL || `${API_BASE}/auth`).replace(/\/+$/, '');
+export const IMAGE_URL = `${BACKEND_ORIGIN}/uploads`;
+export const ORDERS_URL = `${API_BASE}/orders`;

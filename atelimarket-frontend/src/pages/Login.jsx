@@ -19,9 +19,9 @@ export default function Login() {
       
       if (data.success) {
         // Save token
-        localStorage.setItem('atelimarket_user_token', data.token);
-        localStorage.setItem('atelimarket_user', JSON.stringify(data.user));
-        window.dispatchEvent(new Event('atelimarket-auth-change'));
+        sessionStorage.setItem('velqra_user_token', data.token);
+        sessionStorage.setItem('velqra_user', JSON.stringify(data.user));
+        window.dispatchEvent(new Event('velqra-auth-change'));
         
         // Redirect to home
         navigate('/');

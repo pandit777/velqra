@@ -134,6 +134,11 @@ body {
   box-shadow: none;
 }
 
+.velqra-mobile-nav {
+  height: calc(100vh - 105px);
+  height: calc(100dvh - 105px);
+}
+
 .velqra-catalog-hero {
   min-height: 310px;
   padding: 48px 6%;
@@ -748,23 +753,40 @@ body {
 }
 
 .velqra-auth-overlay {
-  background: rgba(3, 12, 9, 0.28);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: rgba(6, 20, 17, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .velqra-auth-modal {
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(26px);
-  -webkit-backdrop-filter: blur(26px);
+  color: #f7f5ef;
+  background: #102a24;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
 }
 
 .velqra-auth-modal input {
-  color: #173b32;
-  background: rgba(255, 255, 255, 0.92) !important;
-  border-color: rgba(255, 255, 255, 0.78) !important;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  box-sizing: border-box;
+  color: #17212b;
+  font-size: 16px;
+  background: #ffffff !important;
+  border-color: #d7ded9 !important;
+  box-shadow: none;
+  transform: none !important;
+}
+
+.velqra-auth-modal input::placeholder {
+  color: #78827c;
+  opacity: 1;
+}
+
+.velqra-auth-modal input:focus {
+  border-color: #d4af37 !important;
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.2);
+  outline: none;
 }
 
 .velqra-auth-modal h3,
@@ -772,7 +794,7 @@ body {
 .velqra-auth-modal label,
 .velqra-auth-modal .text-\[0B3C5D\] {
   color: #ffffff !important;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.82);
+  text-shadow: none;
 }
 
 .velqra-auth-modal .text-slate-400,
@@ -791,7 +813,7 @@ body {
 
 .velqra-auth-modal button:not([type='submit']) {
   color: #d4af37 !important;
-  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+  text-shadow: none;
 }
 
 .velqra-auth-modal button[type='submit'] {
@@ -1296,6 +1318,22 @@ button:active,
   transform: translateY(1px);
 }
 
+input,
+textarea,
+select {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 16px;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  scroll-margin-block: 1rem;
+}
+
 .container {
   max-width: 1280px !important;
 }
@@ -1306,8 +1344,7 @@ button:active,
   box-shadow: var(--shadow-card);
 }
 
-.group:hover,
-.hover\:-translate-y-1:hover {
+.velqra-product-grid-card:hover {
   box-shadow: var(--shadow-hover);
 }
 
@@ -1451,4 +1488,17 @@ footer img[alt] {
     scroll-snap-align: start;
     flex-shrink: 0;
   }
+}
+
+.velqra-cart-panel input,
+.velqra-cart-panel textarea,
+.velqra-cart-panel select {
+  color: #0f172a;
+  caret-color: #0f172a;
+}
+
+.velqra-cart-panel input::placeholder,
+.velqra-cart-panel textarea::placeholder {
+  color: #64748b;
+  opacity: 1;
 }

@@ -2,8 +2,13 @@
 // API Service - Supabase Version
 // =============================================
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const AUTH_URL = import.meta.env.VITE_AUTH_URL || 'http://localhost:5000/api/auth';
+const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD
+    ? 'https://atelimarket-backend.onrender.com/api'
+    : 'http://localhost:5000/api')
+).replace(/\/+$/, '');
+const AUTH_URL = (import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`).replace(/\/+$/, '');
 
 // API Client
 export const api = {

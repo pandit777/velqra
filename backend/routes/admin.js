@@ -5,7 +5,11 @@ const { Order } = require('../models/Order');
 const { User } = require('../models/User');
 const { Product } = require('../models/Product');
 
-const jwtSecret = process.env.JWT_SECRET || 'atelimarket_super_secret_key_2026';
+const jwtSecret = process.env.JWT_SECRET ||
+  (process.env.NODE_ENV === 'production' ? '' : 'velqra_local_development_secret');
+if (!jwtSecret || (process.env.NODE_ENV === 'production' && Buffer.byteLength(jwtSecret, 'utf8') < 32)) {
+  throw new Error('A 32-character JWT_SECRET is required in production');
+}
 
 // Middleware to check admin access
 const checkAdmin = async (req, res, next) => {
