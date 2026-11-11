@@ -43,7 +43,7 @@ The frontend defaults to the local API at `http://localhost:5000/api`. Set `VITE
 
 ## Deployment
 
-- Render uses `backend/render.yaml`. Provide the values marked `sync: false` in the Render dashboard, including Supabase, JWT, Resend, sender email, Fast2SMS, and PayU settings; do not commit credentials.
+- Render uses `backend/render.yaml` for both the API and static frontend. The frontend rewrite serves `index.html` for client-side routes such as `/product/:id`, so direct navigation and refresh work. Provide the values marked `sync: false` in the Render dashboard, including Supabase, JWT, Resend, sender email, Fast2SMS, and PayU settings; do not commit credentials.
 - Deploy `atelimarket-frontend` as the Vercel project root. Vercel builds to `dist` and rewrites client-side routes to `index.html`.
 - Set the Vercel build-time variable `VITE_API_URL` to the deployed backend's `/api` URL if it differs from the configured default.
 - Apply the SQL migration in `supabase/migrations` to the Supabase project before using the product table policies.

@@ -34,3 +34,13 @@ services:
         sync: false
       - key: PAYU_SALT
         sync: false
+  - type: web
+    name: atelimarket-frontend
+    runtime: static
+    rootDir: atelimarket-frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
