@@ -20,6 +20,12 @@ services:
         value: https://atelimarket.shop
       - key: BACKEND_URL
         value: https://atelimarket-backend.onrender.com
+      - key: PAYU_BASE_URL
+        value: https://secure.payu.in/_payment
+      - key: PAYU_SUCCESS_URL
+        value: https://atelimarket-backend.onrender.com/api/payment/payu/callback
+      - key: PAYU_FAILURE_URL
+        value: https://atelimarket-backend.onrender.com/api/payment/payu/callback
       - key: FAST2SMS_API_KEY
         sync: false
       - key: RESEND_API_KEY

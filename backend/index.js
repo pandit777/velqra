@@ -25,18 +25,43 @@ const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(
 const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || `${backendUrl}/api/payment/payu/callback`;
 const payuFailureUrl = process.env.PAYU_FAILURE_URL || `${backendUrl}/api/payment/payu/callback`;
 const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:10000').replace(/\/+$/, '');
-const frontendOrigin = new URL(frontendUrl).origin;
+const parseConfiguredUrl = (name, value) => {
+  try {
+    return new URL(value);
+  } catch {
+    throw new Error(`${name} must be an absolute URL`);
+  }
+};
+const frontendOrigin = parseConfiguredUrl('FRONTEND_URL', frontendUrl).origin;
 if (process.env.NODE_ENV === 'production') {
-  const callbackUrls = [payuSuccessUrl, payuFailureUrl].map(url => new URL(url));
-  const paymentUrl = new URL(payuBaseUrl);
-  if (new URL(frontendUrl).protocol !== 'https:' ||
-      new URL(backendUrl).protocol !== 'https:' ||
-      callbackUrls.some(url => url.protocol !== 'https:' || url.origin !== new URL(backendUrl).origin ||
-        url.pathname !== '/api/payment/payu/callback' || url.search || url.hash) ||
-      paymentUrl.protocol !== 'https:' ||
+  const parsedBackendUrl = parseConfiguredUrl('BACKEND_URL', backendUrl);
+  const callbackUrls = [
+    ['PAYU_SUCCESS_URL', payuSuccessUrl],
+    ['PAYU_FAILURE_URL', payuFailureUrl]
+  ].map(([name, value]) => [name, parseConfiguredUrl(name, value)]);
+  const paymentUrl = parseConfiguredUrl('PAYU_BASE_URL', payuBaseUrl);
+  const errors = [];
+
+  if (parseConfiguredUrl('FRONTEND_URL', frontendUrl).protocol !== 'https:') {
+    errors.push('FRONTEND_URL must use HTTPS');
+  }
+  if (parsedBackendUrl.protocol !== 'https:') {
+    errors.push('BACKEND_URL must use HTTPS');
+  }
+  for (const [name, url] of callbackUrls) {
+    if (url.protocol !== 'https:') errors.push(`${name} must use HTTPS`);
+    if (url.origin !== parsedBackendUrl.origin) errors.push(`${name} must use the BACKEND_URL origin`);
+    if (url.pathname !== '/api/payment/payu/callback' || url.search || url.hash) {
+      errors.push(`${name} must be /api/payment/payu/callback without query or fragment`);
+    }
+  }
+  if (paymentUrl.protocol !== 'https:' ||
       !['secure.payu.in', 'test.payu.in'].includes(paymentUrl.hostname) ||
-      paymentUrl.pathname !== '/_payment') {
-    throw new Error('Production frontend, backend, payment and callback URLs must be HTTPS and trusted');
+      paymentUrl.pathname !== '/_payment' || paymentUrl.search || paymentUrl.hash) {
+    errors.push('PAYU_BASE_URL must be the trusted HTTPS PayU payment endpoint');
+  }
+  if (errors.length) {
+    throw new Error(`Invalid production URL configuration: ${errors.join('; ')}`);
   }
 }
 
