@@ -3,12 +3,14 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { ORDERS_URL } from '../config/app';
+import { downloadOrderInvoice } from '../services/api';
 
 const OrderTracking = () => {
   const { orderId } = useParams();
   const [tracking, setTracking] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
 
   useEffect(() => {
     fetchOrderTracking();
@@ -33,6 +35,17 @@ const OrderTracking = () => {
       setError(err.response?.data?.message || 'Failed to fetch order tracking');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleInvoiceDownload = async () => {
+    setInvoiceLoading(true);
+    try {
+      await downloadOrderInvoice(orderId);
+    } catch (downloadError) {
+      window.alert(downloadError.message || 'Could not download invoice');
+    } finally {
+      setInvoiceLoading(false);
     }
   };
 
@@ -208,6 +221,17 @@ const OrderTracking = () => {
         <Link to="/orders" className="bg-slate-100 text-slate-700 px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-200 transition">
           ← Back to Orders
         </Link>
+        {(tracking.currentStatus === 'Delivered' ||
+          tracking.statusHistory?.some(entry => entry?.status === 'Delivered')) && (
+          <button
+            type="button"
+            onClick={handleInvoiceDownload}
+            disabled={invoiceLoading}
+            className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-emerald-700 transition disabled:opacity-50"
+          >
+            {invoiceLoading ? 'Preparing PDF...' : 'Download Invoice PDF'}
+          </button>
+        )}
         {tracking.currentStatus !== 'Delivered' && tracking.currentStatus !== 'Cancelled' && (
           <button 
             onClick={fetchOrderTracking}

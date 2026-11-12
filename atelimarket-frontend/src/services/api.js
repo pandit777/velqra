@@ -10,6 +10,29 @@ const API_URL = (
 ).replace(/\/+$/, '');
 const AUTH_URL = (import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`).replace(/\/+$/, '');
 
+export async function downloadOrderInvoice(orderId) {
+  const token = sessionStorage.getItem('velqra_user_token');
+  if (!token) throw new Error('Please login to download the invoice');
+
+  const response = await fetch(`${API_URL}/orders/${encodeURIComponent(orderId)}/invoice`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.message || 'Could not download invoice');
+  }
+
+  const file = await response.blob();
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `VELQRA-invoice-${String(orderId).slice(-8)}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // API Client
 export const api = {
   // Get all products

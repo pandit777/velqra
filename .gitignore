@@ -1,15 +1,16 @@
-.env
-.env.local
-.env.production
-.env.*.local
-backend/.env
-atelimarket-frontend/.env
-atelimarket-frontend/.env.local
+# Environment files (keep safe templates)
+**/.env
+**/.env.*
+!**/.env.example
 
 # Dependencies and generated output
 node_modules/
+**/node_modules/
 dist/
+**/dist/
 build/
+**/build/
+backend/uploads/
 
 # Logs and local files
 *.log

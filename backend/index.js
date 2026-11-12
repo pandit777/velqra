@@ -11,6 +11,7 @@ const axios = require('axios');
 const multer = require('multer');
 const crypto = require('crypto');
 const { Resend } = require('resend');
+const { generateInvoicePdf } = require('./utils/invoice');
 
 dotenv.config();
 
@@ -20,10 +21,10 @@ dotenv.config();
 const payuKey = process.env.PAYU_MERCHANT_KEY;
 const payuSalt = process.env.PAYU_SALT;
 const payuBaseUrl = process.env.PAYU_BASE_URL || 'https://secure.payu.in/_payment';
-const backendUrl = (process.env.BACKEND_URL || 'https://atelimarket-backend.onrender.com').replace(/\/+$/, '');
+const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/+$/, '');
 const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || `${backendUrl}/api/payment/payu/callback`;
 const payuFailureUrl = process.env.PAYU_FAILURE_URL || `${backendUrl}/api/payment/payu/callback`;
-const frontendUrl = (process.env.FRONTEND_URL || 'https://atelimarket.shop').replace(/\/+$/, '');
+const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:10000').replace(/\/+$/, '');
 const frontendOrigin = new URL(frontendUrl).origin;
 if (process.env.NODE_ENV === 'production') {
   const callbackUrls = [payuSuccessUrl, payuFailureUrl].map(url => new URL(url));
@@ -114,15 +115,16 @@ const noStore = (req, res, next) => {
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
 const port = process.env.PORT || 5000;
-const jwtSecret = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production'
-  ? ''
-  : 'velqra_local_development_secret');
+const jwtSecret = process.env.JWT_SECRET || '';
+const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD || '';
+const legacyAdminPassword = process.env.LEGACY_ADMIN_PASSWORD || '';
 
 const fast2smsApiKey = process.env.FAST2SMS_API_KEY;
 const smsTestMode = process.env.NODE_ENV !== 'production' &&
   (process.env.SMS_TEST_MODE || 'true').toLowerCase() === 'true';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-const emailTestMode = process.env.NODE_ENV !== 'production' && smsTestMode && !resend;
+const emailTestMode = process.env.NODE_ENV !== 'production' &&
+  (process.env.EMAIL_TEST_MODE || 'true').toLowerCase() === 'true' && !resend;
 const smsTestNumbers = (process.env.SMS_TEST_NUMBERS || '')
   .split(',')
   .map(n => String(n).replace(/\D/g, '').slice(-10))
@@ -141,8 +143,18 @@ if (!supabaseUrl || !supabaseSecretKey) {
   console.error('❌ Supabase credentials missing');
   process.exit(1);
 }
-if (process.env.NODE_ENV === 'production' && Buffer.byteLength(jwtSecret || '', 'utf8') < 32) {
-  console.error('❌ JWT_SECRET must contain at least 32 characters in production');
+if (Buffer.byteLength(jwtSecret, 'utf8') < 32) {
+  console.error('❌ JWT_SECRET must contain at least 32 characters');
+  process.exit(1);
+}
+if (Buffer.byteLength(initialAdminPassword, 'utf8') < 16 ||
+    Buffer.byteLength(initialAdminPassword, 'utf8') > 72) {
+  console.error('❌ INITIAL_ADMIN_PASSWORD must contain 16-72 bytes');
+  process.exit(1);
+}
+if (legacyAdminPassword && (Buffer.byteLength(legacyAdminPassword, 'utf8') > 72 ||
+    legacyAdminPassword === initialAdminPassword)) {
+  console.error('❌ LEGACY_ADMIN_PASSWORD is invalid');
   process.exit(1);
 }
 
@@ -155,7 +167,66 @@ const supabase = createClient(supabaseUrl, supabaseSecretKey, {
 });
 console.log('✅ Supabase initialized');
 
+const ensureBootstrapAdmin = async () => {
+  const { data: admin, error: lookupError } = await supabase
+    .from('admins')
+    .select('id, password')
+    .eq('email', 'admin')
+    .maybeSingle();
+
+  if (lookupError) throw lookupError;
+  if (admin) {
+    if (legacyAdminPassword && await bcrypt.compare(legacyAdminPassword, admin.password)) {
+      const { error: migrationError } = await supabase
+        .from('admins')
+        .update({ password: await bcrypt.hash(initialAdminPassword, 12) })
+        .eq('id', admin.id);
+      if (migrationError) throw migrationError;
+      console.log('Legacy bootstrap admin credential rotated; password change is required.');
+    }
+    return;
+  }
+
+  const { error: insertError } = await supabase
+    .from('admins')
+    .insert({
+      email: 'admin',
+      password: await bcrypt.hash(initialAdminPassword, 12)
+    });
+
+  if (insertError && insertError.code !== '23505') throw insertError;
+  if (insertError) {
+    const { data: existingAdmin, error: retryError } = await supabase
+      .from('admins')
+      .select('id')
+      .eq('email', 'admin')
+      .maybeSingle();
+    if (retryError || !existingAdmin) throw retryError || insertError;
+    return;
+  }
+
+  console.log('✅ Initial admin account created; password change is required before storefront access.');
+};
+
 const hashOtp = (otp) => crypto.createHash('sha256').update(String(otp)).digest('hex');
+const isValidGmailAddress = (value) => {
+  const normalizedEmail = String(value || '').trim().toLowerCase();
+  const [localPart, domain, ...extraParts] = normalizedEmail.split('@');
+  if (!localPart || domain !== 'gmail.com' || extraParts.length > 0 ||
+      localPart.length > 64 || normalizedEmail.length > 254) return false;
+
+  const [username, alias, ...extraAliases] = localPart.split('+');
+  const isValidPart = (part, maxLength) => Boolean(part) &&
+    part.length <= maxLength &&
+    /^[a-z0-9.]+$/.test(part) &&
+    !part.startsWith('.') &&
+    !part.endsWith('.') &&
+    !part.includes('..');
+
+  return extraAliases.length === 0 &&
+    isValidPart(username, 30) &&
+    (alias === undefined || isValidPart(alias, 64));
+};
 const matchesOtp = (expectedHash, suppliedOtp) => {
   if (!/^[a-f0-9]{64}$/i.test(String(expectedHash || ''))) return false;
   const expected = Buffer.from(expectedHash, 'hex');
@@ -324,40 +395,92 @@ console.log(`📁 Uploads: ${uploadsDir}`);
 // MIDDLEWARE
 // =============================================
 const requireAdmin = async (req, res, next) => {
+  const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) return res.status(401).json({ success: false, message: 'Authentication required' });
+
+  let decoded;
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ success: false, message: 'Authentication required' });
-    const decoded = jwt.verify(token, jwtSecret);
-    if (!decoded.userId) return res.status(401).json({ success: false, message: 'Invalid admin session' });
-
-    // 👇 Pehle admins table check karo
-    const { data: admin } = await supabase
-      .from('admins')
-      .select('id, email, role')
-      .eq('id', decoded.userId)
-      .maybeSingle();
-
-    if (admin) {
-      req.adminUser = admin;
-      return next();
-    }
-
-    // 👇 Fallback — users table mein role = admin
-    const { data: user } = await supabase
-      .from('users')
-      .select('id, role')
-      .eq('id', decoded.userId)
-      .maybeSingle();
-
-    if (!user || user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin access required' });
-    }
-    req.adminUser = user;
-    next();
+    decoded = jwt.verify(token, jwtSecret);
   } catch {
     return res.status(401).json({ success: false, message: 'Invalid admin session' });
   }
+
+  if (!decoded.userId || decoded.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+
+  try {
+    const { data: admin, error } = await supabase
+      .from('admins')
+      .select('id, email, role, password')
+      .eq('id', decoded.userId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!admin || (admin.role && admin.role !== 'admin')) {
+      return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+
+    const passwordChangeRequired = await bcrypt.compare(initialAdminPassword, admin.password);
+    const isPasswordSetupRequest = req.method === 'PUT' && req.path === '/api/admin/password';
+    if (passwordChangeRequired && !isPasswordSetupRequest) {
+      return res.status(403).json({ success: false, message: 'Change the initial admin password first' });
+    }
+
+    req.adminUser = admin;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 };
+
+app.get('/api/admin/setup-status', async (req, res) => {
+  try {
+    const { data: admin, error } = await supabase
+      .from('admins')
+      .select('password')
+      .eq('email', 'admin')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!admin) {
+      return res.status(503).json({ success: false, message: 'Admin account is not available' });
+    }
+
+    const passwordChangeRequired = await bcrypt.compare(initialAdminPassword, admin.password);
+    res.json({ success: true, ready: !passwordChangeRequired });
+  } catch (error) {
+    console.error('Admin setup status error:', error.code || 'database error');
+    res.status(500).json({ success: false, message: 'Could not check admin setup status' });
+  }
+});
+
+app.put('/api/admin/password', requireAdmin, async (req, res) => {
+  try {
+    const admin = req.adminUser;
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin access required' });
+
+    const { newPassword } = req.body || {};
+    if (typeof newPassword !== 'string' || Buffer.byteLength(newPassword, 'utf8') < 12 ||
+        Buffer.byteLength(newPassword, 'utf8') > 72) {
+      return res.status(400).json({ success: false, message: 'New password must be 12-72 bytes long' });
+    }
+    if (await bcrypt.compare(newPassword, admin.password)) {
+      return res.status(400).json({ success: false, message: 'Choose a password different from your current password' });
+    }
+
+    const { error: updateError } = await supabase
+      .from('admins')
+      .update({ password: await bcrypt.hash(newPassword, 12), updated_at: new Date().toISOString() })
+      .eq('id', admin.id);
+
+    if (updateError) throw updateError;
+    res.json({ success: true, message: 'Admin password updated' });
+  } catch (error) {
+    console.error('Admin password update error:', error.code || 'database error');
+    res.status(500).json({ success: false, message: 'Could not update admin password' });
+  }
+});
 
 const requireAuth = async (req, res, next) => {
   try {
@@ -419,6 +542,16 @@ const formatCartItem = (item) => ({
   promoApplied: item.promo_applied === true,
   promoCode: item.promo_code || ''
 });
+
+const normalizeCartAttributes = (attributes = {}) => Object.fromEntries(
+  Object.entries(attributes).sort(([a], [b]) => a.localeCompare(b))
+);
+
+const getCartLineKey = (item) => JSON.stringify([
+  String(item.product_id || item.productId || item._id || ''),
+  normalizeCartAttributes(item.selected_attributes || item.selectedAttributes || {}),
+  String(item.promo_code || item.promoCode || '').trim().toUpperCase()
+]);
 
 const formatCart = (cart) => {
   if (!cart) return { items: [], totalItems: 0, totalPrice: 0, totalSavings: 0, updatedAt: new Date().toISOString() };
@@ -504,8 +637,8 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
       typeof password !== 'string' || typeof confirmPassword !== 'string') {
       return res.status(400).json({ success: false, message: 'All fields required' });
     }
-    if (cleanName.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-      return res.status(400).json({ success: false, message: 'Enter a valid name and email address' });
+    if (cleanName.length > 100 || !isValidGmailAddress(email)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid Gmail address ending in @gmail.com' });
     }
     if (password !== confirmPassword) {
       return res.status(400).json({ success: false, message: 'Passwords do not match' });
@@ -737,21 +870,28 @@ app.post('/api/auth/resend-registration-otp', otpRequestRateLimit, otpTargetRequ
 
 app.post('/api/auth/login', otpVerifyRateLimit, otpTargetVerifyRateLimit, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (typeof email !== 'string' || typeof password !== 'string' ||
-        !email.trim() || !password || Buffer.byteLength(password, 'utf8') > 72) {
-      return res.status(400).json({ success: false, message: 'Valid email/phone and password required' });
+    const { password } = req.body;
+    const loginIdentifier = req.body.username ?? req.body.email;
+    if (typeof loginIdentifier !== 'string' || typeof password !== 'string' ||
+        !loginIdentifier.trim() || !password || Buffer.byteLength(password, 'utf8') > 72) {
+      return res.status(400).json({ success: false, message: 'Valid username/email/phone and password required' });
     }
 
-    const identifier = email.trim();
+    const identifier = loginIdentifier.trim();
     const normalizedEmail = identifier.toLowerCase();
     const normalizedPhone = identifier.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').slice(-10);
     const isEmail = identifier.includes('@');
 
-    const adminQuery = isEmail
-      ? supabase.from('admins').select('*').ilike('email', normalizedEmail).single()
-      : supabase.from('admins').select('*').ilike('phone', `%${normalizedPhone}%`).single();
-    const { data: admin } = await adminQuery;
+    let admin = null;
+    if (normalizedEmail === 'admin') {
+      const { data, error } = await supabase
+        .from('admins')
+        .select('*')
+        .eq('email', 'admin')
+        .maybeSingle();
+      if (error) throw error;
+      admin = data;
+    }
 
     if (admin) {
       const valid = await bcrypt.compare(password, admin.password);
@@ -762,7 +902,8 @@ app.post('/api/auth/login', otpVerifyRateLimit, otpTargetVerifyRateLimit, async 
       );
       return res.json({
         success: true, token,
-        user: { id: admin.id, email: admin.email, name: admin.name || 'Admin', role: admin.role || 'admin' }
+        mustChangePassword: await bcrypt.compare(initialAdminPassword, admin.password),
+        user: { id: admin.id, email: 'admin', name: 'Admin', role: 'admin' }
       });
     }
 
@@ -771,7 +912,7 @@ app.post('/api/auth/login', otpVerifyRateLimit, otpTargetVerifyRateLimit, async 
       : supabase.from('users').select('*').ilike('phone', `%${normalizedPhone}%`).single();
     const { data: user } = await userQuery;
 
-    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    if (!user || user.role === 'admin') return res.status(401).json({ success: false, message: 'Invalid credentials' });
     if (!user.is_verified) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     const valid = await bcrypt.compare(password, user.password);
@@ -806,46 +947,57 @@ app.get('/api/auth/verify', async (req, res) => {
 // FORGOT PASSWORD — SMS only
 app.post('/api/auth/forgot-password', otpRequestRateLimit, otpTargetRequestRateLimit, async (req, res) => {
   try {
-    const email = String(req.body.email || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-      return res.status(400).json({ success: false, message: 'Enter a valid email address' });
+    const phone = String(req.body.phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid registered 10-digit mobile number' });
     }
 
-    const { data: user } = await supabase.from('users').select('id, email, name, phone').ilike('email', email).maybeSingle();
-    const { data: admin } = await supabase.from('admins').select('id, email, name, phone').ilike('email', email).maybeSingle();
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, name, phone, role')
+      .eq('phone', phone)
+      .eq('is_verified', true)
+      .maybeSingle();
+    if (userError) throw userError;
 
-    if (!user && !admin) {
+    if (!user || user.role === 'admin') {
       return res.json({ success: true, message: 'If an account exists, a verification code will be sent.' });
     }
 
-    const userName = user?.name || admin?.name || 'User';
-    const userPhone = user?.phone || admin?.phone || '';
     const otp = String(crypto.randomInt(100000, 1000000));
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await supabase.from('password_resets').delete().ilike('email', email);
-    const { error } = await supabase.from('password_resets').insert({
-      email, otp: hashOtp(otp), expires_at: expiresAt.toISOString(), created_at: new Date().toISOString()
-    });
-    if (error) return res.status(500).json({ success: false, message: 'Failed to generate OTP' });
+    const { error: deleteError } = await supabase
+      .from('password_resets')
+      .delete()
+      .ilike('email', user.email);
+    if (deleteError) throw deleteError;
 
-    setImmediate(async () => {
-      if (userPhone) {
-        const smsResult = await sendFast2SMS(userPhone, otp, userName);
-        if (!smsResult.sent) {
-          console.error(`Password-reset SMS delivery failed: ${smsResult.reason}`);
-        }
-      }
+    const { error: insertError } = await supabase.from('password_resets').insert({
+      email: user.email,
+      otp: hashOtp(otp),
+      expires_at: expiresAt.toISOString(),
+      created_at: new Date().toISOString()
     });
+    if (insertError) throw insertError;
+
+    const smsResult = await sendFast2SMS(phone, otp, user.name || 'User');
+    if (!smsResult.sent && smsResult.reason !== 'test_mode_skip') {
+      const { error: cleanupError } = await supabase
+        .from('password_resets')
+        .delete()
+        .ilike('email', user.email);
+      if (cleanupError) throw cleanupError;
+      console.error(`Password-reset SMS delivery failed: ${smsResult.reason}`);
+      return res.status(502).json({ success: false, message: 'Could not send verification code. Please try again later.' });
+    }
 
     const response = { success: true, message: 'If an account exists, a verification code will be sent.' };
-    if (smsTestMode && userPhone) {
-      const nPhone = String(userPhone).replace(/\D/g, '').slice(-10);
-      if (!smsTestNumbers.includes(nPhone)) {
-        response.otp = otp;
-        response.devNote = 'SMS skipped (test mode). OTP shown for testing.';
-      }
+    if (smsResult.reason === 'test_mode_skip' && smsTestMode) {
+      response.otp = smsResult.otp;
+      response.devNote = 'SMS skipped (test mode). OTP shown for testing.';
     }
+    response.phone = phone.slice(-4).padStart(phone.length, '*');
     res.json(response);
   } catch (error) {
     console.error('Forgot error:', error);
@@ -855,28 +1007,54 @@ app.post('/api/auth/forgot-password', otpRequestRateLimit, otpTargetRequestRateL
 
 app.post('/api/auth/verify-otp', otpVerifyRateLimit, otpTargetVerifyRateLimit, async (req, res) => {
   try {
-    const { email, otp } = req.body;
-    if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP required' });
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const { data: resetData, error } = await supabase
-      .from('password_resets').select('*').ilike('email', normalizedEmail).single();
-
-    if (error || !resetData) return res.status(400).json({ success: false, message: 'No OTP. Request new.' });
-    if (new Date() > new Date(resetData.expires_at)) {
-      await supabase.from('password_resets').delete().ilike('email', normalizedEmail);
-      return res.status(400).json({ success: false, message: 'OTP expired' });
+    const phone = String(req.body.phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    const otp = String(req.body.otp || '').trim();
+    if (!/^[6-9]\d{9}$/.test(phone) || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Registered mobile number and 6-digit OTP required' });
     }
-    if (!matchesOtp(resetData.otp, String(otp).trim())) {
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, phone, role')
+      .eq('phone', phone)
+      .eq('is_verified', true)
+      .maybeSingle();
+    if (userError) throw userError;
+    if (!user || user.role === 'admin') {
+      return res.status(400).json({ success: false, message: 'No active verification code found. Request a new one.' });
+    }
+
+    const { data: resetData, error } = await supabase
+      .from('password_resets')
+      .select('*')
+      .ilike('email', user.email)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!resetData) return res.status(400).json({ success: false, message: 'No active verification code found. Request a new one.' });
+    if (new Date() > new Date(resetData.expires_at)) {
+      const { error: deleteError } = await supabase.from('password_resets').delete().ilike('email', user.email);
+      if (deleteError) throw deleteError;
+      return res.status(400).json({ success: false, message: 'Verification code expired. Request a new one.' });
+    }
+    if (!matchesOtp(resetData.otp, otp)) {
+      return res.status(400).json({ success: false, message: 'Invalid verification code' });
     }
 
     const resetToken = jwt.sign(
-      { email: normalizedEmail, purpose: 'reset-password' },
+      { userId: user.id, phone, purpose: 'reset-password' },
       jwtSecret, { expiresIn: '10m' }
     );
-    await supabase.from('password_resets').delete().ilike('email', normalizedEmail);
-    res.json({ success: true, message: 'OTP verified', email: normalizedEmail, resetToken });
+    const { error: updateError } = await supabase
+      .from('password_resets')
+      .update({
+        otp: hashOtp(resetToken),
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+      })
+      .ilike('email', user.email);
+    if (updateError) throw updateError;
+
+    res.json({ success: true, message: 'Verification code accepted', resetToken });
   } catch (error) {
     console.error('Verify OTP error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -885,10 +1063,10 @@ app.post('/api/auth/verify-otp', otpVerifyRateLimit, otpTargetVerifyRateLimit, a
 
 app.post('/api/auth/reset-password', otpVerifyRateLimit, otpTargetVerifyRateLimit, async (req, res) => {
   try {
-    const { email, newPassword, resetToken } = req.body;
-    const normalizedEmail = email?.trim().toLowerCase();
+    const phone = String(req.body.phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    const { newPassword, resetToken } = req.body;
 
-    if (!normalizedEmail || !newPassword || !resetToken) {
+    if (!/^[6-9]\d{9}$/.test(phone) || !newPassword || !resetToken) {
       return res.status(400).json({ success: false, message: 'All fields required' });
     }
     if (typeof newPassword !== 'string' || newPassword.length < 8 ||
@@ -896,36 +1074,62 @@ app.post('/api/auth/reset-password', otpVerifyRateLimit, otpTargetVerifyRateLimi
       return res.status(400).json({ success: false, message: 'Password must be 8-72 characters long' });
     }
 
+    let decoded;
     try {
-      const decoded = jwt.verify(resetToken, jwtSecret);
-      if (decoded.email !== normalizedEmail || decoded.purpose !== 'reset-password') {
+      decoded = jwt.verify(resetToken, jwtSecret);
+      if (decoded.phone !== phone || !decoded.userId || decoded.purpose !== 'reset-password') {
         return res.status(401).json({ success: false, message: 'Invalid token' });
       }
     } catch {
       return res.status(401).json({ success: false, message: 'Token expired' });
     }
 
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, phone, role')
+      .eq('id', decoded.userId)
+      .eq('phone', phone)
+      .eq('is_verified', true)
+      .maybeSingle();
+    if (userError) throw userError;
+    if (!user || user.role === 'admin') return res.status(401).json({ success: false, message: 'Invalid or expired reset session' });
+
+    const { data: resetData, error: resetLookupError } = await supabase
+      .from('password_resets')
+      .select('otp, expires_at')
+      .ilike('email', user.email)
+      .maybeSingle();
+    if (resetLookupError) throw resetLookupError;
+    if (!resetData || new Date() > new Date(resetData.expires_at) ||
+        !matchesOtp(resetData.otp, resetToken)) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired reset session. Request a new code.' });
+    }
+
+    const { data: consumedReset, error: consumeError } = await supabase
+      .from('password_resets')
+      .delete()
+      .ilike('email', user.email)
+      .eq('otp', hashOtp(resetToken))
+      .gt('expires_at', new Date().toISOString())
+      .select('email')
+      .maybeSingle();
+    if (consumeError) throw consumeError;
+    if (!consumedReset) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired reset session. Request a new code.' });
+    }
+
     const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({ password: hashedPassword, updated_at: new Date().toISOString() })
+      .eq('id', user.id)
+      .eq('phone', phone)
+      .select('id')
+      .maybeSingle();
+    if (updateError) throw updateError;
+    if (!updatedUser) return res.status(401).json({ success: false, message: 'Invalid or expired reset session' });
 
-    const { data: user } = await supabase.from('users').update({
-      password: hashedPassword, updated_at: new Date().toISOString()
-    }).ilike('email', normalizedEmail).select();
-
-    if (user && user.length > 0) {
-      await supabase.from('password_resets').delete().ilike('email', normalizedEmail);
-      return res.json({ success: true, message: 'Password reset!' });
-    }
-
-    const { data: admin } = await supabase.from('admins').update({
-      password: hashedPassword, updated_at: new Date().toISOString()
-    }).ilike('email', normalizedEmail).select();
-
-    if (admin && admin.length > 0) {
-      await supabase.from('password_resets').delete().ilike('email', normalizedEmail);
-      return res.json({ success: true, message: 'Password reset!' });
-    }
-
-    res.status(404).json({ success: false, message: 'Account not found' });
+    res.json({ success: true, message: 'Password reset!' });
   } catch (error) {
     console.error('Reset error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -1297,15 +1501,34 @@ app.post('/api/cart/add', async (req, res) => {
     if (!token) return res.status(401).json({ success: false, message: 'Login required' });
     const decoded = jwt.verify(token, jwtSecret);
     const userId = decoded.userId;
-    const { productId, qty = 1, selectedAttributes = {}, promoCode: requestedPromoCode = '' } = req.body;
-    if (!productId || !Number.isSafeInteger(Number(qty)) || Number(qty) < 1) {
+    const { data: cartUser, error: cartUserError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+    if (cartUserError) throw cartUserError;
+    if (!cartUser) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please sign in with a customer account to use the cart'
+      });
+    }
+
+    const { productId, selectedAttributes = {}, promoCode: requestedPromoCode = '' } = req.body;
+    const quantity = Number(req.body.qty ?? 1);
+    if (!productId || !Number.isSafeInteger(quantity) || quantity < 1) {
       return res.status(400).json({ success: false, message: 'Valid product ID and quantity required' });
     }
     if (!selectedAttributes || typeof selectedAttributes !== 'object' || Array.isArray(selectedAttributes)) {
       return res.status(400).json({ success: false, message: 'Invalid product options' });
     }
 
-    const { data: product } = await supabase.from('products').select('*').eq('id', productId).single();
+    const { data: product, error: productError } = await supabase
+      .from('products')
+      .select('*')
+      .eq('id', productId)
+      .maybeSingle();
+    if (productError) throw productError;
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     if (product.stock <= 0) return res.status(400).json({ success: false, message: 'Out of stock' });
     const promoCode = String(requestedPromoCode || '').trim().toUpperCase();
@@ -1315,52 +1538,85 @@ app.post('/api/cart/add', async (req, res) => {
     }
     const availableAttributes = product.attributes && typeof product.attributes === 'object'
       ? product.attributes : {};
+    for (const [key, values] of Object.entries(availableAttributes)) {
+      if (Array.isArray(values) && values.length > 0 &&
+        (!values.includes(selectedAttributes[key]))) {
+        return res.status(400).json({ success: false, message: `Select a valid ${key} option` });
+      }
+    }
     for (const [key, value] of Object.entries(selectedAttributes)) {
       if (!Array.isArray(availableAttributes[key]) || !availableAttributes[key].includes(value)) {
         return res.status(400).json({ success: false, message: 'Invalid product options' });
       }
     }
+    const normalizedAttributes = normalizeCartAttributes(selectedAttributes);
 
-    const { data: cart } = await supabase.from('carts').select('*').eq('user_id', userId).single();
+    const { data: cart, error: cartError } = await supabase
+      .from('carts')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (cartError) throw cartError;
     let items = cart?.items || [];
 
-    const existingIdx = items.findIndex(item =>
-      item.product_id === productId &&
-      JSON.stringify(item.selected_attributes || {}) === JSON.stringify(selectedAttributes) &&
-      String(item.promo_code || '') === promoCode
-    );
+    const newItem = {
+      product_id: product.id, name: product.name,
+      price: promoCode
+        ? Math.round(Number(product.price) * (1 - Number(product.promo_discount) / 100))
+        : Number(product.price),
+      original_price: product.original_price, discount_percent: product.discount_percent || 0,
+      qty: quantity, image: product.image || '', image_url: product.image_url || '',
+      stock: product.stock, category: product.category,
+      selected_attributes: normalizedAttributes,
+      promo_applied: Boolean(promoCode),
+      promo_code: promoCode
+    };
+    const existingIdx = items.findIndex(item => getCartLineKey(item) === getCartLineKey(newItem));
+    const totalProductQty = items
+      .filter(item => String(item.product_id || item.productId || item._id) === String(product.id))
+      .reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+    if (totalProductQty + quantity > Number(product.stock)) {
+      return res.status(400).json({ success: false, message: 'Not enough stock' });
+    }
 
     if (existingIdx > -1) {
-      const newQty = items[existingIdx].qty + Number(qty);
-      if (newQty > product.stock) return res.status(400).json({ success: false, message: 'Not enough stock' });
-      items[existingIdx].qty = newQty;
+      items[existingIdx] = { ...newItem, qty: (Number(items[existingIdx].qty) || 0) + quantity };
     } else {
-      const price = promoCode
-        ? Math.round(Number(product.price) * (1 - Number(product.promo_discount) / 100))
-        : Number(product.price);
-      items.push({
-        product_id: product.id, name: product.name, price,
-        original_price: product.original_price, discount_percent: product.discount_percent || 0,
-        qty: Number(qty), image: product.image || '', image_url: product.image_url || '',
-        stock: product.stock, category: product.category,
-        selected_attributes: selectedAttributes,
-        promo_applied: Boolean(promoCode),
-        promo_code: promoCode
-      });
+      items.push(newItem);
     }
 
     const totalItems = items.reduce((s, i) => s + i.qty, 0);
     const totalPrice = items.reduce((s, i) => s + (i.price * i.qty), 0);
     const totalSavings = items.reduce((s, i) => s + ((i.original_price - i.price) * i.qty), 0);
 
-    const { data: updated } = await supabase.from('carts').upsert({
+    const cartData = {
       user_id: userId, items, total_items: totalItems, total_price: totalPrice,
       total_savings: totalSavings, updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id' }).select().single();
+    };
+    const { data: updated, error: saveError } = cart
+      ? await supabase.from('carts').update(cartData).eq('user_id', userId).select().single()
+      : await supabase.from('carts').insert(cartData).select().single();
+    if (saveError) throw saveError;
 
     res.json({ success: true, message: 'Added to cart', cart: formatCart(updated) });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error' });
+    console.error('Add to cart failed:', {
+      code: error.code,
+      message: error.message
+    });
+    const status = error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError'
+      ? 401
+      : error.code === '23503'
+        ? 409
+        : 500;
+    res.status(status).json({
+      success: false,
+      message: status === 401
+        ? 'Session expired. Please log in again.'
+        : error.code === '23503'
+          ? 'Cart user relationship is not configured correctly. Apply the latest Supabase migration.'
+          : 'Could not add product to cart'
+    });
   }
 });
 
@@ -1384,17 +1640,30 @@ app.put('/api/cart/update/:productId', async (req, res) => {
     if (!cart) return res.status(404).json({ success: false, message: 'Cart not found' });
 
     let items = cart.items || [];
-    const idx = items.findIndex(item =>
-      item.product_id === productId &&
-      JSON.stringify(item.selected_attributes || {}) === JSON.stringify(selectedAttributes) &&
-      String(item.promo_code || '').toUpperCase() === promoCode
-    );
+    const normalizedAttributes = normalizeCartAttributes(selectedAttributes);
+    const idx = items.findIndex(item => getCartLineKey({
+      ...item,
+      selected_attributes: normalizeCartAttributes(item.selected_attributes || {})
+    }) === getCartLineKey({
+      product_id: productId,
+      selected_attributes: normalizedAttributes,
+      promo_code: promoCode
+    }));
     if (idx === -1) return res.status(404).json({ success: false, message: 'Item not found' });
 
     if (quantity === 0) items.splice(idx, 1);
     else {
-      const { data: product } = await supabase.from('products').select('stock').eq('id', productId).single();
-      if (product && quantity > product.stock) return res.status(400).json({ success: false, message: 'Not enough stock' });
+      const { data: product, error: productError } = await supabase.from('products').select('stock').eq('id', productId).single();
+      if (productError) throw productError;
+      if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+      const otherProductQty = items
+        .filter((item, index) => index !== idx &&
+          String(item.product_id || item.productId || item._id) === String(productId))
+        .reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+      if (quantity > (Number(items[idx].qty) || 0) &&
+        otherProductQty + quantity > Number(product.stock)) {
+        return res.status(400).json({ success: false, message: 'Not enough stock' });
+      }
       items[idx].qty = quantity;
     }
 
@@ -1402,10 +1671,11 @@ app.put('/api/cart/update/:productId', async (req, res) => {
     const totalPrice = items.reduce((s, i) => s + (i.price * i.qty), 0);
     const totalSavings = items.reduce((s, i) => s + ((i.original_price - i.price) * i.qty), 0);
 
-    const { data: updated } = await supabase.from('carts').update({
+    const { data: updated, error: updateError } = await supabase.from('carts').update({
       items, total_items: totalItems, total_price: totalPrice,
       total_savings: totalSavings, updated_at: new Date().toISOString()
     }).eq('user_id', decoded.userId).select().single();
+    if (updateError) throw updateError;
 
     res.json({ success: true, cart: formatCart(updated) });
   } catch (error) {
@@ -1473,19 +1743,29 @@ app.post('/api/cart/sync', async (req, res) => {
     if (!items || !Array.isArray(items)) return res.status(400).json({ success: false, message: 'Invalid items' });
 
     const processedItems = [];
+    const requestedQuantities = new Map();
     for (const item of items) {
-      const { data: product } = await supabase.from('products').select('*').eq('id', item._id).single();
+      const { data: product, error: productError } = await supabase.from('products').select('*').eq('id', item._id).single();
+      if (productError && productError.code !== 'PGRST116') throw productError;
       if (!product) continue;
       const requestedQty = Number(item.qty);
       if (!Number.isSafeInteger(requestedQty) || requestedQty < 1) {
         return res.status(400).json({ success: false, message: 'Invalid cart quantity' });
       }
-      const qty = Math.min(requestedQty, product.stock);
+      const alreadyAdded = requestedQuantities.get(String(product.id)) || 0;
+      const qty = Math.min(requestedQty, Math.max(0, Number(product.stock) - alreadyAdded));
       if (qty <= 0) continue;
-      const selectedAttributes = item.selectedAttributes && typeof item.selectedAttributes === 'object' &&
-        !Array.isArray(item.selectedAttributes) ? item.selectedAttributes : {};
+      if (!item.selectedAttributes || typeof item.selectedAttributes !== 'object' || Array.isArray(item.selectedAttributes)) {
+        return res.status(400).json({ success: false, message: 'Invalid product options' });
+      }
+      const selectedAttributes = normalizeCartAttributes(item.selectedAttributes);
       const availableAttributes = product.attributes && typeof product.attributes === 'object'
         ? product.attributes : {};
+      for (const [key, values] of Object.entries(availableAttributes)) {
+        if (Array.isArray(values) && values.length > 0 && !values.includes(selectedAttributes[key])) {
+          return res.status(400).json({ success: false, message: `Select a valid ${key} option` });
+        }
+      }
       for (const [key, value] of Object.entries(selectedAttributes)) {
         if (!Array.isArray(availableAttributes[key]) || !availableAttributes[key].includes(value)) {
           return res.status(400).json({ success: false, message: 'Invalid product options' });
@@ -1508,6 +1788,7 @@ app.post('/api/cart/sync', async (req, res) => {
         promo_applied: Boolean(promoCode),
         promo_code: promoCode
       });
+      requestedQuantities.set(String(product.id), alreadyAdded + qty);
     }
 
     const totalItems = processedItems.reduce((s, i) => s + i.qty, 0);
@@ -2029,6 +2310,58 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     res.json({ success: true, orders: orders.map(formatOrder) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error' });
+  }
+});
+
+app.get('/api/orders/:id/invoice', requireAuth, async (req, res) => {
+  try {
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (orderError) throw orderError;
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    let authorized = order.user_id === req.userId;
+    if (!authorized) {
+      const { data: admin, error: adminError } = await supabase
+        .from('admins')
+        .select('id')
+        .eq('id', req.userId)
+        .maybeSingle();
+      if (adminError) throw adminError;
+      authorized = Boolean(admin);
+    }
+    if (!authorized) {
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', req.userId)
+        .maybeSingle();
+      if (userError) throw userError;
+      authorized = user?.role === 'admin';
+    }
+    if (!authorized) return res.status(403).json({ success: false, message: 'Unauthorized' });
+
+    const delivered = order.status === 'Delivered' ||
+      (Array.isArray(order.status_history) && order.status_history.some(event => event?.status === 'Delivered'));
+    if (!delivered) {
+      return res.status(409).json({ success: false, message: 'Invoice is available after delivery' });
+    }
+
+    const invoice = await generateInvoicePdf(order);
+    const fileId = String(order.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(-36);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="VELQRA-invoice-${fileId}.pdf"`,
+      'Cache-Control': 'private, no-store'
+    });
+    res.send(invoice);
+  } catch (error) {
+    console.error('Invoice generation error:', error.code || error.message);
+    res.status(500).json({ success: false, message: 'Could not generate invoice' });
   }
 });
 
@@ -2855,10 +3188,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`🚀 VELQRA Server running on port ${port}`);
-  console.log(`📍 Health: http://localhost:${port}/health`);
-  console.log(`📁 Uploads: ${uploadsDir}`);
-  console.log(`📱 SMS: ${fast2smsApiKey ? (smsTestMode ? '🧪 Test Mode' : 'Live') : 'Not configured'}`);
-  console.log(`📧 Email: ❌ DISABLED`);
+ensureBootstrapAdmin().then(() => {
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`🚀 VELQRA Server running on port ${port}`);
+    console.log(`📍 Health: http://localhost:${port}/health`);
+    console.log(`📁 Uploads: ${uploadsDir}`);
+    console.log(`📱 SMS: ${fast2smsApiKey ? (smsTestMode ? '🧪 Test Mode' : 'Live') : 'Not configured'}`);
+    console.log(`📧 Email: ❌ DISABLED`);
+  });
+}).catch(error => {
+  console.error('Admin account initialization failed:', error.code || 'database error');
+  process.exitCode = 1;
 });

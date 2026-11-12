@@ -53,12 +53,20 @@ router.get('/', async (req, res) => {
 router.post('/add', async (req, res) => {
   try {
     const userId = getUserId(req);
-    const { productId, qty = 1 } = req.body;
+    const { productId, selectedAttributes = {}, promoCode = '' } = req.body;
+    const qty = Number(req.body.qty ?? 1);
 
     if (!productId) {
       return res.status(400).json({ 
         success: false, 
         message: 'Product ID is required' 
+      });
+    }
+
+    if (!Number.isSafeInteger(qty) || qty < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid quantity is required'
       });
     }
 
@@ -78,7 +86,7 @@ router.post('/add', async (req, res) => {
       });
     }
 
-    const cart = await Cart.addItem(userId, productId, qty);
+    const cart = await Cart.addItem(userId, productId, qty, selectedAttributes, promoCode);
     
     res.json({
       success: true,
@@ -92,9 +100,10 @@ router.post('/add', async (req, res) => {
     });
   } catch (error) {
     console.error('Error adding to cart:', error);
-    res.status(500).json({ 
+    const isCartValidationError = /not enough stock|product not found|valid quantity|option|promotion/i.test(error.message || '');
+    res.status(isCartValidationError ? 400 : 500).json({
       success: false, 
-      message: 'Error adding to cart',
+      message: isCartValidationError ? error.message : 'Error adding to cart',
       error: error.message 
     });
   }
@@ -107,16 +116,17 @@ router.put('/update/:productId', async (req, res) => {
   try {
     const userId = getUserId(req);
     const { productId } = req.params;
-    const { qty } = req.body;
+    const { selectedAttributes = {}, promoCode = '' } = req.body;
+    const qty = Number(req.body.qty);
 
-    if (!qty || qty < 0) {
+    if (!Number.isSafeInteger(qty) || qty < 0) {
       return res.status(400).json({ 
         success: false, 
         message: 'Valid quantity is required' 
       });
     }
 
-    const cart = await Cart.updateItemQuantity(userId, productId, qty);
+    const cart = await Cart.updateItemQuantity(userId, productId, qty, selectedAttributes, promoCode);
     
     res.json({
       success: true,
@@ -130,9 +140,10 @@ router.put('/update/:productId', async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating cart:', error);
-    res.status(500).json({ 
+    const isCartValidationError = /not enough stock|product not found|item not found|valid quantity|option|promotion/i.test(error.message || '');
+    res.status(isCartValidationError ? 400 : 500).json({
       success: false, 
-      message: 'Error updating cart',
+      message: isCartValidationError ? error.message : 'Error updating cart',
       error: error.message 
     });
   }
@@ -207,25 +218,37 @@ router.post('/sync', async (req, res) => {
 
     // Process items and add to cart
     const processedItems = [];
+    const requestedQuantities = new Map();
     for (const item of items) {
+      const requestedQty = Number(item.qty);
+      if (!Number.isSafeInteger(requestedQty) || requestedQty < 1) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid cart quantity'
+        });
+      }
+
       const product = await Product.findById(item._id);
       if (!product) continue;
 
-      const qty = Math.min(item.qty, product.stock);
+      const alreadyAdded = requestedQuantities.get(String(product.id)) || 0;
+      const qty = Math.min(requestedQty, Math.max(0, Number(product.stock) - alreadyAdded));
       if (qty <= 0) continue;
 
-      processedItems.push({
-        product_id: product.id,
-        name: product.name,
-        price: product.price,
-        original_price: product.original_price,
-        discount_percent: product.discount_percent || 0,
-        qty: qty,
-        image: product.image || '',
-        image_url: product.image_url || '',
-        stock: product.stock,
-        category: product.category
-      });
+      try {
+        processedItems.push(Cart.buildItem(
+          product,
+          qty,
+          item.selectedAttributes || item.selected_attributes || {},
+          item.promoCode || item.promo_code || ''
+        ));
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: error.message
+        });
+      }
+      requestedQuantities.set(String(product.id), alreadyAdded + qty);
     }
 
     const cart = await Cart.updateCart(userId, processedItems);

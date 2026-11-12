@@ -37,7 +37,7 @@ services:
   - type: web
     name: atelimarket-frontend
     runtime: static
-    rootDir: atelimarket-frontend
+    rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
     routes:

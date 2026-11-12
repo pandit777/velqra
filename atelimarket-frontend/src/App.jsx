@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
+import { downloadOrderInvoice } from './services/api';
+import {
+  CURRENCY_OPTIONS,
+  LANGUAGE_OPTIONS,
+  LocalizationContext,
+  formatCurrency as formatMoney,
+  translate,
+  useLocalization
+} from './i18n/localization';
+import LocaleControls from './i18n/LocaleControls';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import banner1 from './assets/banner1.png';
 import banner2 from './assets/banner2.png';
@@ -18,6 +28,39 @@ const API_URL = (
 ).replace(/\/$/, '');
 const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
+const EXCHANGE_RATES_CACHE_KEY = 'velqra_exchange_rates';
+const ADMIN_SETUP_CACHE_KEY = 'velqra_admin_setup_complete';
+const EXCHANGE_RATE_API_URL = 'https://api.frankfurter.dev/v2/rates';
+const isValidGmailAddress = (value) => {
+  const normalizedEmail = String(value || '').trim().toLowerCase();
+  const [localPart, domain, ...extraParts] = normalizedEmail.split('@');
+  if (!localPart || domain !== 'gmail.com' || extraParts.length > 0 ||
+      localPart.length > 64 || normalizedEmail.length > 254) return false;
+
+  const [username, alias, ...extraAliases] = localPart.split('+');
+  const isValidPart = (part, maxLength) => Boolean(part) &&
+    part.length <= maxLength &&
+    /^[a-z0-9.]+$/.test(part) &&
+    !part.startsWith('.') &&
+    !part.endsWith('.') &&
+    !part.includes('..');
+
+  return extraAliases.length === 0 &&
+    isValidPart(username, 30) &&
+    (alias === undefined || isValidPart(alias, 64));
+};
+const getCachedExchangeRates = () => {
+  try {
+    const cached = JSON.parse(localStorage.getItem(EXCHANGE_RATES_CACHE_KEY) || '{}');
+    const rates = cached.rates && typeof cached.rates === 'object' ? cached.rates : {};
+    return {
+      rates: { INR: 1, ...rates },
+      date: typeof cached.date === 'string' ? cached.date : ''
+    };
+  } catch {
+    return { rates: { INR: 1 }, date: '' };
+  }
+};
 const getPayUPaymentUrl = (value) => {
   const paymentUrl = new URL(String(value));
   if (paymentUrl.protocol !== 'https:' ||
@@ -47,13 +90,26 @@ const getSessionUser = () => {
   }
 };
 
+const getRegisteredPhone = (user) =>
+  String(user?.phone || user?.phoneNumber || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').slice(-10);
+
 const normalizeCart = (items = []) => items.map(item => ({
   ...item,
   _id: item._id || item.productId || item.product_id,
   originalPrice: item.originalPrice ?? item.original_price ?? 0,
   image: item.image || item.imageUrl || item.image_url || '',
-  selectedAttributes: item.selectedAttributes || item.selected_attributes || {}
+  selectedAttributes: item.selectedAttributes || item.selected_attributes || {},
+  promoCode: item.promoCode || item.promo_code || '',
+  promoApplied: item.promoApplied ?? item.promo_applied ?? Boolean(item.promoCode || item.promo_code)
 }));
+
+const getCartItemKey = (item) => JSON.stringify([
+  String(item._id || item.productId || item.product_id || item.id || ''),
+  Object.fromEntries(
+    Object.entries(item.selectedAttributes || item.selected_attributes || {}).sort(([a], [b]) => a.localeCompare(b))
+  ),
+  String(item.promoApplied || item.promo_applied ? item.promoCode || item.promo_code || '' : '').trim().toUpperCase()
+]);
 
 const normalizeProduct = (product) => ({
   ...product,
@@ -161,6 +217,7 @@ const RETURN_REASONS = [
 ];
 
 const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
+  const { formatCurrency } = useLocalization();
   const [step, setStep] = useState('otp'); // otp → otp-verify → bank → form → done
   const [otp, setOtp] = useState('');
   const [devOtp, setDevOtp] = useState('');
@@ -544,7 +601,7 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
                       />
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-xs text-slate-800 truncate">{item.name}</div>
-                        <div className="text-[10px] text-slate-500">₹{item.price} × max {item.qty}</div>
+                        <div className="text-[10px] text-slate-500">{formatCurrency(item.price)} × max {item.qty}</div>
                       </div>
                       <input
                         type="number"
@@ -596,7 +653,7 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
             {/* Refund estimate */}
             <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-3">
               <div className="text-xs">
-                <span className="font-bold">Estimated Refund:</span> ₹{refundAmount.toFixed(0)}
+                <span className="font-bold">Estimated Refund:</span> {formatCurrency(refundAmount)}
               </div>
               <div className="text-[10px] text-slate-500 mt-1">
                 Approve hone ke baad aapke bank account mein aayega
@@ -644,8 +701,8 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
 // FORGOT PASSWORD MODAL
 // =============================================
 const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
-  const [step, setStep] = useState('email');
-  const [email, setEmail] = useState('');
+  const [step, setStep] = useState('phone');
+  const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -676,8 +733,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 
   useEffect(() => {
     if (!isOpen) {
-      setStep('email');
-      setEmail('');
+      setStep('phone');
+      setPhone('');
       setOtp('');
       setNewPassword('');
       setConfirmPassword('');
@@ -699,7 +756,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     setTestModeOtp('');
 
     try {
-      const response = await axios.post(`${API_URL}/auth/forgot-password`, { email });
+      const response = await axios.post(`${API_URL}/auth/forgot-password`, { phone });
       
       if (response.data.success) {
         setStep('otp');
@@ -709,7 +766,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
           setTestModeOtp(response.data.otp);
           setSuccess('✅ Test Mode — OTP auto-filled.');
         } else {
-          setSuccess('✅ OTP sent successfully! Please check your email.');
+          setSuccess('✅ If an account exists, an OTP has been sent to its registered mobile number.');
         }
       } else {
         setError(response.data.message);
@@ -728,8 +785,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     setSuccess('');
 
     try {
-      const response = await axios.post(`${API_URL}/auth/verify-otp`, { 
-        email, 
+      const response = await axios.post(`${API_URL}/auth/verify-otp`, {
+        phone,
         otp: otp.trim() 
       });
       
@@ -772,8 +829,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     }
 
     try {
-      const response = await axios.post(`${API_URL}/auth/reset-password`, { 
-        email, 
+      const response = await axios.post(`${API_URL}/auth/reset-password`, {
+        phone,
         newPassword,
         resetToken
       });
@@ -801,7 +858,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
     setTestModeOtp('');
 
     try {
-      const response = await axios.post(`${API_URL}/auth/forgot-password`, { email });
+      const response = await axios.post(`${API_URL}/auth/forgot-password`, { phone });
       
       if (response.data.success) {
         startTimer();
@@ -810,7 +867,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
           setTestModeOtp(response.data.otp);
           setSuccess('✅ Test Mode — OTP auto-filled.');
         } else {
-          setSuccess('✅ OTP resent successfully!');
+          setSuccess('✅ If an account exists, a new OTP has been sent to its registered mobile number.');
         }
       } else {
         setError(response.data.message);
@@ -824,11 +881,11 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 
   return (
     <div 
-      className="velqra-auth-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="velqra-auth-overlay fixed inset-0 z-[100] flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div 
-        className="bg-white rounded-2xl max-w-md w-full p-6 border border-slate-100 shadow-2xl relative"
+        className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 border border-slate-100 shadow-2xl relative"
         onClick={(e) => e.stopPropagation()}
       >
         <button 
@@ -841,14 +898,14 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
         <div className="flex items-center gap-3 mb-1">
           <span className="text-2xl">🔑</span>
           <h3 className="text-lg font-black text-[#0B3C5D]">
-            {step === 'email' && 'Forgot Password'}
+            {step === 'phone' && 'Forgot Password'}
             {step === 'otp' && 'Verify OTP'}
             {step === 'reset' && 'Reset Password'}
           </h3>
         </div>
         <p className="text-[11px] text-slate-400 mb-4">
-          {step === 'email' && 'Enter your registered email to receive OTP'}
-          {step === 'otp' && 'Enter the OTP sent to your email'}
+          {step === 'phone' && 'Enter your registered mobile number to receive an OTP'}
+          {step === 'otp' && `Enter the OTP sent to the mobile ending in ${phone.slice(-4)}`}
           {step === 'reset' && 'Create a new password for your account'}
         </p>
 
@@ -864,16 +921,21 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
           </div>
         )}
 
-        {step === 'email' && (
+        {step === 'phone' && (
           <form onSubmit={handleSendOTP} className="space-y-4">
             <div>
-              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Email Address</label>
+              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Registered Mobile Number</label>
               <input
-                type="email"
+                type="tel"
                 required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                inputMode="numeric"
+                autoComplete="tel"
+                minLength="10"
+                maxLength="14"
+                pattern="[6-9][0-9]{9}"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(-10))}
+                placeholder="10-digit mobile number"
                 className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
               />
             </div>
@@ -909,7 +971,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
                 placeholder="Enter 6-digit OTP"
                 className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition text-center text-2xl font-bold tracking-widest"
               />
-              <p className="text-[10px] text-slate-400 mt-1 text-center">OTP sent to {email}</p>
+              <p className="text-[10px] text-slate-400 mt-1 text-center">OTP sent to mobile ending in {phone.slice(-4)}</p>
             </div>
 
             <div className="flex items-center justify-between text-xs">
@@ -936,10 +998,10 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
 
             <button
               type="button"
-              onClick={() => setStep('email')}
+              onClick={() => setStep('phone')}
               className="w-full text-center text-[10px] text-slate-400 hover:text-[#0B3C5D] transition"
             >
-              ← Change Email
+              ← Change Mobile Number
             </button>
           </form>
         )}
@@ -951,12 +1013,14 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
               <input
                 type="password"
                 required
+                minLength="8"
+                maxLength="72"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
               />
-              <p className="text-[9px] text-slate-400 mt-1">Minimum 6 characters</p>
+              <p className="text-[9px] text-slate-400 mt-1">Password must be 8-72 characters long</p>
             </div>
 
             <div>
@@ -964,6 +1028,8 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
               <input
                 type="password"
                 required
+                minLength="8"
+                maxLength="72"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="••••••••"
@@ -1417,7 +1483,8 @@ const AboutPage = () => (
 // =============================================
 // PRODUCT DETAIL PAGE - WITH VIDEO & ATTRIBUTES
 // =============================================
-const ProductDetailPage = ({ addToCart, openCart }) => {
+const ProductDetailPage = ({ addToCart, openCheckout }) => {
+  const { t, formatCurrency } = useLocalization();
   const { id } = useParams();
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1427,6 +1494,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
   const [selectedAttributes, setSelectedAttributes] = useState({});
   const [promoInput, setPromoInput] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
+  const [addingToCart, setAddingToCart] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -1501,8 +1569,8 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
     fetchProductDetails();
   }, [id]);
 
-  const handleAddToCart = () => {
-    if (!product) return;
+  const handleAddToCart = async () => {
+    if (!product || addingToCart) return false;
     
     if (product.attributes && Object.keys(product.attributes).length > 0) {
       const allSelected = Object.keys(product.attributes).every(key => {
@@ -1511,7 +1579,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
       
       if (!allSelected) {
         alert('Please select all options before adding to cart.');
-        return;
+        return false;
       }
     }
     
@@ -1525,19 +1593,22 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
         : product.price
     };
     
-    if (addToCart) {
-      addToCart(productWithAttributes);
-    } else {
+    setAddingToCart(true);
+    try {
+      if (addToCart) {
+        return await addToCart(productWithAttributes);
+      }
       const event = new CustomEvent('addToCart', { detail: productWithAttributes });
       window.dispatchEvent(event);
+      return true;
+    } finally {
+      setAddingToCart(false);
     }
   };
 
-  const handleBuyNow = () => {
-    handleAddToCart();
-    window.setTimeout(() => {
-      if (openCart) openCart();
-    }, 0);
+  const handleBuyNow = async () => {
+    const added = await handleAddToCart();
+    if (added && openCheckout) openCheckout();
   };
 
   const handleAttributeChange = (key, value) => {
@@ -1646,18 +1717,18 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
             </span>
             <h1 className="w-full break-words [overflow-wrap:anywhere] text-3xl font-black leading-tight text-[#171717] sm:text-4xl">{product.name}</h1>
             {product.brand && (
-              <p className="text-sm text-slate-500 mt-1">Brand: <span className="font-medium">{product.brand}</span></p>
+              <p className="text-sm text-slate-500 mt-1">{t('Brand:')} <span className="font-medium">{product.brand}</span></p>
             )}
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <div className="flex items-baseline gap-3 flex-wrap">
-              <span className="text-3xl font-black text-[#173b32]">₹{promoPrice}</span>
+              <span className="text-3xl font-black text-[#173b32]">{formatCurrency(promoPrice)}</span>
               {product.discountPercent > 0 && (
                 <>
-                  <span className="text-lg text-slate-500 line-through">₹{product.originalPrice}</span>
+                  <span className="text-lg text-slate-500 line-through">{formatCurrency(product.originalPrice)}</span>
                   {promoApplied && (
-                    <span className="text-sm text-slate-500 line-through">₹{product.price}</span>
+                    <span className="text-sm text-slate-500 line-through">{formatCurrency(product.price)}</span>
                   )}
                   <span className="bg-green-100 text-green-700 font-bold text-sm px-3 py-1 rounded-full">
                     -{product.discountPercent}% OFF
@@ -1667,19 +1738,19 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
             </div>
             {product.discountPercent > 0 && (
               <p className="text-sm text-green-600 font-medium mt-1">
-                You save ₹{product.originalPrice - promoPrice}
+                {t('You save')} {formatCurrency(product.originalPrice - promoPrice)}
               </p>
             )}
             {!product.discountPercent && promoApplied && (
               <p className="text-sm text-green-600 font-medium mt-1">
-                Promo savings: ₹{promoSavings}
+                {t('Promo savings')}: {formatCurrency(promoSavings)}
               </p>
             )}
           </div>
 
           {product.promoCode && (
             <div className="rounded-2xl border border-green-200 bg-green-50 p-5">
-              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-green-700">Promo offer on this product</p>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-green-700">{t('Promo offer on this product')}</p>
               <div className="flex gap-2">
                 <input
                   value={promoInput}
@@ -1687,7 +1758,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
                     setPromoInput(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''));
                     setPromoApplied(false);
                   }}
-                  placeholder="Enter promo code"
+                  placeholder={t('Enter promo code')}
                   className="min-w-0 flex-1 rounded-xl border border-green-200 bg-white px-3 py-2.5 text-sm font-bold uppercase text-black caret-black placeholder:text-slate-500 outline-none focus:border-green-600"
                 />
                 <button
@@ -1695,12 +1766,12 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
                   onClick={applyProductPromo}
                   className="rounded-xl bg-green-700 px-4 text-sm font-bold text-white hover:bg-green-800"
                 >
-                  Apply
+                  {t('Apply')}
                 </button>
               </div>
               {promoApplied && (
                 <p className="mt-3 text-sm font-bold text-green-700">
-                  {product.promoDiscount}% extra discount applied — save ₹{Math.round(product.price * product.promoDiscount / 100)}
+                  {product.promoDiscount}% extra discount applied — save {formatCurrency(Math.round(product.price * product.promoDiscount / 100))}
                 </p>
               )}
             </div>
@@ -1709,22 +1780,22 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <button
               onClick={handleAddToCart}
-              disabled={product.stock <= 0}
+              disabled={product.stock <= 0 || addingToCart}
               className={`rounded-xl py-3.5 font-bold text-sm uppercase tracking-wide transition ${
                 product.stock > 0
                   ? 'bg-amber-400 text-black hover:bg-amber-500 shadow-md'
                   : 'cursor-not-allowed bg-slate-700 text-slate-400'
               }`}
             >
-              {product.stock > 0 ? 'Add to Cart' : 'Out of Stock'}
+              {product.stock <= 0 ? t('Out of Stock') : addingToCart ? t('Adding...') : t('Add to Cart')}
             </button>
             <button
               type="button"
               onClick={handleBuyNow}
-              disabled={product.stock <= 0}
+              disabled={product.stock <= 0 || addingToCart}
               className="rounded-xl border border-[#173b32] bg-transparent py-3.5 text-sm font-bold uppercase tracking-wide text-[#173b32] transition hover:bg-[#173b32] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Buy Now
+              {t('Buy Now')}
             </button>
           </div>
 
@@ -1732,7 +1803,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           {hasAttributes && (
             <div className="bg-white rounded-2xl border border-slate-200 p-5">
               <h3 className="font-bold text-sm text-slate-700 mb-4 flex items-center gap-2">
-                <span>📋</span> Select Options
+                <span>📋</span> {t('Select Options')}
               </h3>
               <div className="space-y-4">
                 {Object.entries(product.attributes).map(([key, values]) => (
@@ -1760,7 +1831,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
               </div>
               <div className="mt-3 text-xs text-slate-400">
                 {Object.keys(selectedAttributes).length > 0 && (
-                  <span>Selected: {Object.entries(selectedAttributes).map(([key, value]) => `${key}: ${value}`).join(', ')}</span>
+                  <span>{t('Selected:')} {Object.entries(selectedAttributes).map(([key, value]) => `${key}: ${value}`).join(', ')}</span>
                 )}
               </div>
             </div>
@@ -1770,7 +1841,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           {hasVideo && (
             <div className="bg-white rounded-2xl border border-slate-200 p-5">
               <h3 className="font-bold text-sm text-slate-700 mb-3 flex items-center gap-2">
-                <span>🎬</span> Product Video
+                <span>🎬</span> {t('Product Video')}
               </h3>
               <div className="aspect-w-16 aspect-h-9 rounded-xl overflow-hidden bg-slate-100">
                 {product.videoType === 'youtube' && youtubeId ? (
@@ -1806,7 +1877,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
             <div className={`flex items-center gap-2 ${product.stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
               <span className={`w-2 h-2 rounded-full ${product.stock > 0 ? 'bg-green-500' : 'bg-red-500'}`}></span>
               <span className="font-bold text-sm">
-                {product.stock > 0 ? `In Stock (${product.stock} available)` : 'Out of Stock'}
+                {product.stock > 0 ? t('In Stock ({count} available)', { count: product.stock }) : t('Out of Stock')}
               </span>
             </div>
           </div>
@@ -1814,7 +1885,7 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
           {product.description && (
             <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-5">
               <h3 className="font-bold text-sm text-slate-800 mb-2 flex items-center gap-2">
-                <span>📝</span> Description
+                <span>📝</span> {t('Description')}
               </h3>
               <p className="w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-slate-600">
                 {product.description}
@@ -1842,10 +1913,12 @@ const ProductDetailPage = ({ addToCart, openCart }) => {
 // =============================================
 // ORDERS PAGE
 // =============================================
-const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
+const OrdersPage = ({ onLoginRequest }) => {
+  const { t, formatCurrency, language } = useLocalization();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [invoiceLoadingId, setInvoiceLoadingId] = useState(null);
 
   const fetchOrders = async () => {
     try {
@@ -1869,6 +1942,17 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
       setError('Failed to fetch orders');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleInvoiceDownload = async orderId => {
+    setInvoiceLoadingId(orderId);
+    try {
+      await downloadOrderInvoice(orderId);
+    } catch (downloadError) {
+      window.alert(downloadError.message || 'Could not download invoice');
+    } finally {
+      setInvoiceLoadingId(null);
     }
   };
 
@@ -1918,21 +2002,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
   };
 
   const getStatusDisplay = (status, paymentMethod) => {
-    if (paymentMethod === 'cod') {
-      return status;
-    } else {
-      const statusMap = {
-        'Payment Verification Pending': '⏳ Payment Pending',
-        'Payment Verified': '✅ Payment Verified',
-        'Payment Failed': '❌ Payment Failed',
-        'Confirmed': '📋 Order Confirmed',
-        'Shipped': '🚚 Shipped',
-        'Delivered': '📦 Delivered',
-        'Return Requested': '↩️ Return Requested',
-        'Cancelled': '❌ Cancelled'
-      };
-      return statusMap[status] || status;
-    }
+    return status;
   };
 
     const canCancelOrder = (order) => {
@@ -2024,7 +2094,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
     return (
       <div className="container mx-auto px-4 py-12 text-center">
         <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-[#0B3C5D]"></div>
-        <p className="text-slate-400 mt-4">Loading your orders...</p>
+        <p className="text-slate-400 mt-4">{t('Loading your orders...')}</p>
       </div>
     );
   }
@@ -2035,13 +2105,10 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
         <div className="text-6xl mb-4">🔒</div>
         <p className="text-red-500 font-bold">{error}</p>
         <button 
-          onClick={() => {
-            if (setUserAuthMode) setUserAuthMode('login');
-            if (setIsAuthModalOpen) setIsAuthModalOpen(true);
-          }}
+          onClick={onLoginRequest}
           className="mt-4 inline-block bg-[#0B3C5D] text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-[#07263b] transition"
         >
-          Login to view orders
+          {t('Login to view orders')}
         </button>
       </div>
     );
@@ -2051,20 +2118,20 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
     <div className="container mx-auto max-w-4xl px-4 py-8">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
-          <span>📦</span> My Orders
+          <span>📦</span> {t('My Orders')}
         </h1>
         <Link to="/" className="text-sm text-[#0B3C5D] font-bold hover:underline">
-          ← Continue Shopping
+          ← {t('Continue Shopping')}
         </Link>
       </div>
 
       {orders.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-sm">
           <div className="text-6xl mb-4">🛍️</div>
-          <h3 className="font-bold text-lg text-slate-700">No orders yet</h3>
-          <p className="text-slate-400 text-sm mt-2">Start shopping to place your first order!</p>
+          <h3 className="font-bold text-lg text-slate-700">{t('No orders yet')}</h3>
+          <p className="text-slate-400 text-sm mt-2">{t('Start shopping to place your first order!')}</p>
           <Link to="/" className="mt-4 inline-block bg-[#FF5722] text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-[#e64a19] transition">
-            Browse Products
+            {t('Browse Products')}
           </Link>
         </div>
       ) : (
@@ -2074,6 +2141,8 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
             const statusDisplay = getStatusDisplay(order.status, order.paymentMethod);
             const statusBadgeClass = getStatusBadge(order.status, order.paymentMethod);
             const isCancellable = canCancelOrder(order);
+            const invoiceAvailable = order.status === 'Delivered' ||
+              (order.statusHistory || []).some(entry => entry?.status === 'Delivered');
             
             return (
               <div key={order._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition p-6">
@@ -2084,13 +2153,13 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
                         #{order._id.slice(-8).toUpperCase()}
                       </span>
                       <span className={`text-xs font-bold px-3 py-1 rounded-full ${statusBadgeClass}`}>
-                        {statusDisplay}
+                        {t(statusDisplay)}
                       </span>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isCOD ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
-                        {isCOD ? '💵 COD' : '📱 Online'}
+                        {isCOD ? `💵 ${t('Cash on Delivery')}` : `📱 ${t('Online Payment')}`}
                       </span>
                       <span className="text-xs text-slate-400">
-                        {new Date(order.createdAt).toLocaleDateString('en-IN', {
+                        {new Date(order.createdAt).toLocaleDateString(language === 'en' ? 'en-IN' : `${language}-IN`, {
                           day: 'numeric',
                           month: 'short',
                           year: 'numeric'
@@ -2098,18 +2167,28 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-4 text-sm">
-                      <span className="text-slate-600">{order.items?.length || 0} items</span>
+                      <span className="text-slate-600">{order.items?.length || 0} {t((order.items?.length || 0) === 1 ? 'item' : 'items')}</span>
                       <span className="text-slate-300">|</span>
-                      <span className="font-bold text-[#0B3C5D]">₹{order.total}</span>
+                      <span className="font-bold text-[#0B3C5D]">{formatCurrency(order.total)}</span>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Link to={`/orders/track/${order._id}`} className="bg-[#0B3C5D] text-white px-5 py-2 rounded-xl text-sm font-bold hover:bg-[#07263b] transition text-center whitespace-nowrap">
-                      Track Order →
+                      {t('Track Order')} →
                     </Link>
+                    {invoiceAvailable && (
+                      <button
+                        type="button"
+                        onClick={() => handleInvoiceDownload(order._id)}
+                        disabled={invoiceLoadingId === order._id}
+                        className="bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-emerald-100 transition whitespace-nowrap disabled:opacity-50"
+                      >
+                        {invoiceLoadingId === order._id ? t('Preparing PDF...') : t('Download Invoice PDF')}
+                      </button>
+                    )}
                     {isCancellable && (
                       <button onClick={() => handleCancelOrder(order._id)} className="bg-red-50 text-red-600 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-100 transition whitespace-nowrap">
-                        Cancel Order
+                        {t('Cancel Order')}
                       </button>
                     )}
                     {canRequestReturn(order) && (
@@ -2117,7 +2196,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
                         onClick={() => handleReturnRequest(order)}
                         className="bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-emerald-100 transition whitespace-nowrap"
                       >
-                        Request Return
+                        {t('Request Return')}
                       </button>
                     )}
                   </div>
@@ -2143,9 +2222,9 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
                                 ))}
                               </div>
                             )}
-                            <p className="text-[10px] text-slate-500">₹{item.price} × {item.qty}</p>
+                            <p className="text-[10px] text-slate-500">{formatCurrency(item.price)} × {item.qty}</p>
                           </div>
-                          <span className="text-xs font-bold text-[#0B3C5D]">₹{item.price * item.qty}</span>
+                          <span className="text-xs font-bold text-[#0B3C5D]">{formatCurrency(item.price * item.qty)}</span>
                         </div>
                       ))}
                     </div>
@@ -2164,6 +2243,7 @@ const OrdersPage = ({ setIsAuthModalOpen, setUserAuthMode }) => {
 // ORDER TRACKING
 // =============================================
 const OrderTracking = () => {
+  const { t, formatCurrency, language } = useLocalization();
   const { orderId } = useParams();
   const [tracking, setTracking] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2213,7 +2293,7 @@ const OrderTracking = () => {
     return (
       <div className="container mx-auto px-4 py-20 text-center">
         <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-[#0B3C5D]"></div>
-        <p className="text-slate-400 mt-4 font-medium">Loading order details...</p>
+        <p className="text-slate-400 mt-4 font-medium">{t('Loading order details...')}</p>
       </div>
     );
   }
@@ -2222,9 +2302,9 @@ const OrderTracking = () => {
     return (
       <div className="container mx-auto px-4 py-20 text-center">
         <div className="text-6xl mb-4">🔍</div>
-        <h3 className="text-red-500 font-bold text-lg">{error || 'Order not found'}</h3>
+        <h3 className="text-red-500 font-bold text-lg">{t(error || 'Order not found')}</h3>
         <Link to="/orders" className="mt-4 inline-block bg-[#0B3C5D] text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-[#07263b] transition">
-          ← Back to Orders
+          ← {t('Back to Orders')}
         </Link>
       </div>
     );
@@ -2236,13 +2316,13 @@ const OrderTracking = () => {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="text-2xl font-black flex items-center gap-2">
-              <span>📦</span> Order Tracking
+              <span>📦</span> {t('Order Tracking')}
             </h2>
             <p className="text-sm opacity-80 mt-1 font-mono">
-              Order ID: #{tracking.orderId?.slice(-8).toUpperCase()}
+              {t('Order ID:')} #{tracking.orderId?.slice(-8).toUpperCase()}
             </p>
             <p className="text-xs opacity-70 mt-1">
-              Placed: {new Date(tracking.createdAt).toLocaleDateString('en-IN', {
+              {t('Placed')}: {new Date(tracking.createdAt).toLocaleDateString(language === 'en' ? 'en-IN' : `${language}-IN`, {
                 day: 'numeric',
                 month: 'long',
                 year: 'numeric',
@@ -2252,9 +2332,9 @@ const OrderTracking = () => {
             </p>
           </div>
           <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full">
-            <span className="text-xs font-bold uppercase tracking-wider">Status:</span>
+            <span className="text-xs font-bold uppercase tracking-wider">{t('Status:')}</span>
             <span className={`text-xs font-bold px-3 py-1 rounded-full ${getStatusBadge(tracking.currentStatus)}`}>
-              {tracking.currentStatus}
+              {t(tracking.currentStatus)}
             </span>
           </div>
         </div>
@@ -2262,7 +2342,7 @@ const OrderTracking = () => {
 
       <div className="bg-white rounded-2xl shadow-md p-6 mb-6 border border-slate-100">
         <h3 className="font-bold text-lg text-slate-800 mb-6 flex items-center gap-2">
-          <span>🚚</span> Delivery Timeline
+          <span>🚚</span> {t('Delivery Timeline')}
         </h3>
         <div className="space-y-6 relative">
           {tracking.timeline?.map((step, index) => (
@@ -2275,14 +2355,14 @@ const OrderTracking = () => {
               </div>
               <div className="flex-1 pt-0.5">
                 <div className={`font-bold text-sm ${step.completed ? 'text-slate-800' : 'text-slate-400'}`}>
-                  {step.status}
+                  {t(step.status)}
                 </div>
                 <div className={`text-xs ${step.completed ? 'text-slate-600' : 'text-slate-400'}`}>
-                  {step.description}
+                  {t(step.description)}
                 </div>
                 {step.timestamp && (
                   <div className="text-[10px] text-slate-400 mt-1">
-                    {new Date(step.timestamp).toLocaleString('en-IN', {
+                    {new Date(step.timestamp).toLocaleString(language === 'en' ? 'en-IN' : `${language}-IN`, {
                       day: 'numeric',
                       month: 'short',
                       hour: '2-digit',
@@ -2298,7 +2378,7 @@ const OrderTracking = () => {
 
       <div className="bg-white rounded-2xl shadow-md p-6 mb-6 border border-slate-100">
         <h3 className="font-bold text-lg text-slate-800 mb-4 flex items-center gap-2">
-          <span>📋</span> Order Summary
+          <span>📋</span> {t('Order Summary')}
         </h3>
         <div className="space-y-2">
           {tracking.items?.map((item, index) => (
@@ -2314,21 +2394,21 @@ const OrderTracking = () => {
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-slate-400 text-xs">×{item.qty}</span>
-                <span className="font-bold text-[#0B3C5D]">₹{item.price * item.qty}</span>
+                <span className="font-bold text-[#0B3C5D]">{formatCurrency(item.price * item.qty)}</span>
               </div>
             </div>
           ))}
         </div>
         <div className="mt-4 pt-4 border-t-2 border-slate-200 flex justify-between items-center">
-          <span className="font-bold text-slate-600">Total</span>
-          <span className="text-xl font-black text-[#0B3C5D]">₹{tracking.total}</span>
+          <span className="font-bold text-slate-600">{t('Total')}</span>
+          <span className="text-xl font-black text-[#0B3C5D]">{formatCurrency(tracking.total)}</span>
         </div>
       </div>
 
       {tracking.delivery && (
         <div className="bg-white rounded-2xl shadow-md p-6 mb-6 border border-slate-100">
           <h4 className="font-bold text-sm text-slate-700 mb-3 flex items-center gap-2">
-            <span>📬</span> Delivery Address
+            <span>📬</span> {t('Delivery Address')}
           </h4>
           <div className="bg-slate-50 p-4 rounded-xl text-sm text-slate-600 space-y-1">
             <p className="font-bold text-slate-700">{tracking.delivery.fullName}</p>
@@ -2336,7 +2416,7 @@ const OrderTracking = () => {
             <p>{tracking.delivery.city}, {tracking.delivery.state} - {tracking.delivery.pincode}</p>
             <p className="text-xs text-slate-400">📞 {tracking.delivery.phone}</p>
             {tracking.delivery.note && (
-              <p className="text-xs text-slate-400 mt-1">📝 Note: {tracking.delivery.note}</p>
+              <p className="text-xs text-slate-400 mt-1">📝 {t('Note:')} {tracking.delivery.note}</p>
             )}
           </div>
         </div>
@@ -2344,14 +2424,14 @@ const OrderTracking = () => {
 
       <div className="flex flex-wrap gap-4 justify-center">
         <Link to="/orders" className="bg-slate-100 text-slate-700 px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-200 transition">
-          ← Back to Orders
+          ← {t('Back to Orders')}
         </Link>
         {tracking.currentStatus !== 'Delivered' && tracking.currentStatus !== 'Cancelled' && (
           <button 
             onClick={fetchOrderTracking}
             className="bg-[#0B3C5D] text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:bg-[#07263b] transition flex items-center gap-2"
           >
-            <span>🔄</span> Refresh Status
+            <span>🔄</span> {t('Refresh Status')}
           </button>
         )}
       </div>
@@ -2365,10 +2445,27 @@ const OrderTracking = () => {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [language, setLanguage] = useState(() => {
+    const stored = localStorage.getItem('velqra_language');
+    return LANGUAGE_OPTIONS.some(option => option.value === stored) ? stored : 'en';
+  });
+  const [currency, setCurrency] = useState(() => {
+    const stored = localStorage.getItem('velqra_currency');
+    return CURRENCY_OPTIONS.some(option => option.value === stored) ? stored : 'INR';
+  });
+  const [initialExchangeRates] = useState(getCachedExchangeRates);
+  const [exchangeRates, setExchangeRates] = useState(initialExchangeRates.rates);
+  const [exchangeRateDate, setExchangeRateDate] = useState(initialExchangeRates.date);
+  const [exchangeRateStatus, setExchangeRateStatus] = useState('loading');
+  const formatPrice = amount => formatMoney(amount, language, currency, exchangeRates);
+  const t = (key, values) => translate(language, key, values);
+  const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
   const [cart, setCart] = useState([]);
   const cartMutationQueue = useRef(Promise.resolve());
+  const cartOpenRef = useRef(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState('All');
   const [loading, setLoading] = useState(false);
@@ -2380,12 +2477,68 @@ export default function App() {
   const [activeBanner, setActiveBanner] = useState(0);
   const banners = [banner1, banner2, banner3];
 
+  useEffect(() => {
+    localStorage.setItem('velqra_language', language);
+  }, [language]);
+
+  useEffect(() => {
+    localStorage.setItem('velqra_currency', currency);
+  }, [currency]);
+
+  useEffect(() => {
+    let active = true;
+    const loadExchangeRates = async () => {
+      try {
+        const quotes = CURRENCY_OPTIONS
+          .filter(option => option.value !== 'INR')
+          .map(option => option.value)
+          .join(',');
+        const response = await fetch(`${EXCHANGE_RATE_API_URL}?base=INR&quotes=${quotes}`);
+        if (!response.ok) throw new Error('Exchange-rate request failed');
+
+        const entries = await response.json();
+        if (!Array.isArray(entries)) throw new Error('Invalid exchange-rate response');
+
+        const nextRates = { INR: 1 };
+        entries.forEach(entry => {
+          if (CURRENCY_OPTIONS.some(option => option.value === entry.quote) &&
+              Number.isFinite(Number(entry.rate)) && Number(entry.rate) > 0) {
+            nextRates[entry.quote] = Number(entry.rate);
+          }
+        });
+
+        if (!active) return;
+        const hasMissingRates = CURRENCY_OPTIONS.some(option => !nextRates[option.value]);
+        const latestDate = entries[0]?.date || '';
+        setExchangeRates(nextRates);
+        setExchangeRateDate(latestDate);
+        setExchangeRateStatus(hasMissingRates ? 'partial' : 'ready');
+        localStorage.setItem(EXCHANGE_RATES_CACHE_KEY, JSON.stringify({
+          rates: nextRates,
+          date: latestDate
+        }));
+      } catch {
+        if (active) {
+          const hasCachedForeignRates = Object.keys(initialExchangeRates.rates)
+            .some(code => code !== 'INR');
+          setExchangeRateStatus(hasCachedForeignRates ? 'stale' : 'error');
+        }
+      }
+    };
+
+    loadExchangeRates();
+    const refreshTimer = window.setInterval(loadExchangeRates, 6 * 60 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+    };
+  }, []);
+
   // Auth States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
     const user = getSessionUser();
     return sessionStorage.getItem('velqra_admin') === 'true' && user?.role === 'admin';
   });
-  const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [registerName, setRegisterName] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
@@ -2399,9 +2552,34 @@ export default function App() {
   });
   const [userAuthMode, setUserAuthMode] = useState('login');
 
+  const openCart = () => {
+    if (cartOpenRef.current) return;
+    cartOpenRef.current = true;
+    navigate(`${location.pathname}${location.search}${location.hash}`, {
+      state: { ...(location.state || {}), velqraCartOpen: true }
+    });
+    setIsCartOpen(true);
+  };
+
+  const closeCart = () => {
+    if (!cartOpenRef.current) return;
+    cartOpenRef.current = false;
+    setIsCartOpen(false);
+    setCheckoutOpen(false);
+    if (location.state?.velqraCartOpen) navigate(-1);
+  };
+
+  useEffect(() => {
+    const cartEntryIsOpen = Boolean(location.state?.velqraCartOpen);
+    cartOpenRef.current = cartEntryIsOpen;
+    setIsCartOpen(cartEntryIsOpen);
+    if (!cartEntryIsOpen) setCheckoutOpen(false);
+  }, [location.state]);
+
   useEffect(() => {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
+    setIsHeaderSearchOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
@@ -2448,8 +2626,27 @@ export default function App() {
     return false;
   });
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
+  const isUserAuthPage = location.pathname === '/login' || location.pathname === '/register';
+  const openUserAuth = (mode = 'login') => {
+    setError('');
+    setUserAuthMode(mode);
+    setIsAuthModalOpen(true);
+    setIsForgotPasswordOpen(false);
+    if (mode === 'register') setRegStep('form');
+    navigate(mode === 'register' ? '/register' : '/login');
+  };
+
+  useEffect(() => {
+    if (!isUserAuthPage) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isUserAuthPage]);
 
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [registeredPhoneLoading, setRegisteredPhoneLoading] = useState(false);
   const [isOrderOTPModalOpen, setIsOrderOTPModalOpen] = useState(false);
   const [pendingOrderData, setPendingOrderData] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('cod');
@@ -2468,12 +2665,41 @@ export default function App() {
 
   useEffect(() => {
     if (checkoutOpen) {
+      const registeredPhone = getRegisteredPhone(currentUser);
       setDeliveryForm(prev => ({
         ...prev,
-        phone: String(currentUser?.phone || '').replace(/\D/g, '').slice(-10)
+        phone: registeredPhone
       }));
     }
   }, [checkoutOpen, currentUser?.phone]);
+
+  useEffect(() => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (!checkoutOpen || !token || currentUser?.role === 'admin') return;
+
+    let active = true;
+    setRegisteredPhoneLoading(true);
+    axios.get(`${AUTH_URL}/verify`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(({ data }) => {
+      if (!active || !data.success) return;
+      setCurrentUser(data.user);
+      setDeliveryForm(prev => ({
+        ...prev,
+        phone: getRegisteredPhone(data.user)
+      }));
+      sessionStorage.setItem('velqra_user', JSON.stringify(data.user));
+    }).catch(() => {
+      if (active) showToast('Could not load your registered phone number. Please sign in again.', 'error');
+    }).finally(() => {
+      if (active) setRegisteredPhoneLoading(false);
+    });
+
+    return () => {
+      active = false;
+      setRegisteredPhoneLoading(false);
+    };
+  }, [checkoutOpen, currentUser?.role]);
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
 
@@ -2503,7 +2729,38 @@ export default function App() {
 
   const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [adminAuthMode, setAdminAuthMode] = useState('login');
+  const [adminSetupStatus, setAdminSetupStatus] = useState(() =>
+    localStorage.getItem(ADMIN_SETUP_CACHE_KEY) === 'true' ? 'complete' : 'loading'
+  );
+  const [adminPasswordChangeRequired, setAdminPasswordChangeRequired] = useState(false);
+  const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState('');
+  const [adminSetupError, setAdminSetupError] = useState('');
   const isAdminLoginPath = location.pathname === '/admin/login';
+
+  const loadAdminSetupStatus = async () => {
+    const setupWasCompleted = localStorage.getItem(ADMIN_SETUP_CACHE_KEY) === 'true';
+    if (!setupWasCompleted) setAdminSetupStatus('loading');
+    try {
+      const { data } = await axios.get(`${API_URL}/admin/setup-status`);
+      if (!data.success || typeof data.ready !== 'boolean') {
+        throw new Error('Invalid admin setup status response');
+      }
+      if (data.ready) {
+        localStorage.setItem(ADMIN_SETUP_CACHE_KEY, 'true');
+        setAdminSetupStatus('complete');
+      } else {
+        localStorage.removeItem(ADMIN_SETUP_CACHE_KEY);
+        setAdminSetupStatus('required');
+      }
+    } catch {
+      setAdminSetupStatus(setupWasCompleted ? 'complete' : 'error');
+    }
+  };
+
+  useEffect(() => {
+    loadAdminSetupStatus();
+  }, []);
 
   useEffect(() => {
     if (isAdminLoginPath && !isAdminLoggedIn) {
@@ -2512,8 +2769,6 @@ export default function App() {
     }
   }, [isAdminLoginPath, isAdminLoggedIn]);
   const [pendingPaymentOrders, setPendingPaymentOrders] = useState([]);
-
-  const categories = ['All', 'Face Wash'];
 
   useEffect(() => {
     const verifyAdminSession = async () => {
@@ -2565,7 +2820,7 @@ export default function App() {
     setPaymentMethod('cod');
     setDeliveryForm({
       fullName: currentUser?.name || '',
-      phone: String(currentUser?.phone || '').replace(/\D/g, '').slice(-10),
+      phone: getRegisteredPhone(currentUser),
       alternatePhone: '',
       email: currentUser?.email || '',
       address: '',
@@ -2654,8 +2909,7 @@ export default function App() {
     const token = sessionStorage.getItem('velqra_user_token');
     if (!token) {
       showToast('Please login to place order', 'error');
-      setIsAuthModalOpen(true);
-      setUserAuthMode('login');
+      openUserAuth('login');
       return;
     }
 
@@ -2677,7 +2931,7 @@ export default function App() {
       return;
     }
 
-    const registeredPhone = String(currentUser?.phone || '').replace(/\D/g, '').slice(-10);
+    const registeredPhone = getRegisteredPhone(currentUser);
     const deliveryPhone = String(deliveryForm.phone || '').replace(/\D/g, '').slice(-10);
     if (!registeredPhone || deliveryPhone !== registeredPhone) {
       showToast('Primary phone must match your registered mobile number.', 'error');
@@ -2750,7 +3004,7 @@ export default function App() {
 
         // 2. Cart clear karo
         setCart([]);
-        setIsCartOpen(false);
+        closeCart();
         resetCheckout();
         fetchOrders();
 
@@ -2826,7 +3080,7 @@ export default function App() {
         const orderId = response.data.order._id;
 
         setCart([]);
-        setIsCartOpen(false);
+        closeCart();
         setIsOrderOTPModalOpen(false);
         setPendingOrderData(null);
         resetCheckout();
@@ -2941,11 +3195,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchProducts();
-  }, []);
+    if (adminSetupStatus === 'complete') fetchProducts();
+  }, [adminSetupStatus]);
 
-  const syncGuestCart = async (token) => {
-    if (!token || cart.length === 0) return;
+  const syncGuestCart = async (token, user) => {
+    if (!token || !user || user.role === 'admin' || cart.length === 0) return;
 
     try {
       const { data: currentCart } = await axios.get(`${API_URL}/cart`, {
@@ -2955,10 +3209,8 @@ export default function App() {
       const mergedItems = [...existingItems];
 
       cart.forEach(item => {
-        const key = `${item._id}:${JSON.stringify(item.selectedAttributes || {})}:${String(item.promoApplied ? item.promoCode : '').toUpperCase()}`;
-        const existing = mergedItems.find(candidate =>
-          `${candidate._id}:${JSON.stringify(candidate.selectedAttributes || {})}:${String(candidate.promoApplied ? candidate.promoCode : '').toUpperCase()}` === key
-        );
+        const key = getCartItemKey(item);
+        const existing = mergedItems.find(candidate => getCartItemKey(candidate) === key);
         if (existing) {
           existing.qty = Math.min(existing.stock || item.stock, existing.qty + item.qty);
         } else {
@@ -2991,6 +3243,11 @@ export default function App() {
 
   useEffect(() => {
     const token = sessionStorage.getItem('velqra_user_token');
+    if (currentUser?.role === 'admin') {
+      setCart([]);
+      setCartLoading(false);
+      return;
+    }
     if (!isUserLoggedIn || !token) {
       setCart([]);
       setCartLoading(false);
@@ -3011,7 +3268,7 @@ export default function App() {
     });
 
     return () => { active = false; };
-  }, [isUserLoggedIn]);
+  }, [isUserLoggedIn, currentUser?.role]);
 
   const fetchOrders = async () => {
     const token = sessionStorage.getItem('velqra_user_token');
@@ -3050,11 +3307,19 @@ export default function App() {
   }, [currentUser?.name, currentUser?.email]);
 
   useEffect(() => {
+    if (location.pathname === '/login' || location.pathname === '/register') {
+      setUserAuthMode(location.pathname === '/register' ? 'register' : 'login');
+      setIsAuthModalOpen(true);
+    } else {
+      setIsAuthModalOpen(false);
+    }
+  }, [location.pathname]);
+
+  useEffect(() => {
     const params = new URLSearchParams(location.search);
     const mode = params.get('mode');
     if (mode === 'login' || mode === 'register') {
-      setUserAuthMode(mode);
-      setIsAuthModalOpen(true);
+      openUserAuth(mode);
     }
   }, [location.search]);
 
@@ -3085,8 +3350,8 @@ export default function App() {
     }
 
     const normalizedEmail = regEmail.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      setError('Enter a valid email address');
+    if (!isValidGmailAddress(normalizedEmail)) {
+      setError('Enter a valid Gmail address ending in @gmail.com');
       setLoading(false);
       return;
     }
@@ -3151,7 +3416,7 @@ export default function App() {
       if (res.data.success) {
         const userData = res.data.user;
         const token = res.data.token;
-        await syncGuestCart(token);
+        await syncGuestCart(token, userData);
         setCurrentUser(userData);
         setIsUserLoggedIn(true);
         sessionStorage.setItem('velqra_user', JSON.stringify(userData));
@@ -3159,6 +3424,7 @@ export default function App() {
         window.dispatchEvent(new Event('velqra-auth-change'));
         setRegStep('success');
         setIsAuthModalOpen(false);
+        navigate('/');
         showToast('✅ Registration completed successfully!', 'success');
 
         setRegName('');
@@ -3226,7 +3492,7 @@ export default function App() {
 
       if (res.data.success) {
         const userData = res.data.user;
-        await syncGuestCart(res.data.token);
+        await syncGuestCart(res.data.token, userData);
         setCurrentUser(userData);
         setIsUserLoggedIn(true);
         sessionStorage.setItem('velqra_user', JSON.stringify(userData));
@@ -3237,6 +3503,8 @@ export default function App() {
           sessionStorage.setItem('velqra_admin', 'true');
           sessionStorage.setItem('velqra_token', res.data.token);
           navigate('/admin');
+        } else {
+          navigate('/');
         }
         setUserEmail('');
         setUserPassword('');
@@ -3267,18 +3535,19 @@ export default function App() {
   const handleAdminLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setAdminSetupError('');
     try {
-      const res = await axios.post(`${AUTH_URL}/login`, { email: loginEmail, password: loginPassword });
+      const res = await axios.post(`${AUTH_URL}/login`, { username: 'admin', password: loginPassword });
       if (res.data.success) {
         const userRole = res.data.user?.role;
         if (userRole !== 'admin') {
-          showToast('This account is not an admin account.', 'error');
+          setAdminSetupError('This account is not an admin account.');
           setLoading(false);
           return;
         }
 
         setIsAdminLoggedIn(true);
-        await syncGuestCart(res.data.token);
+        await syncGuestCart(res.data.token, res.data.user);
         sessionStorage.setItem('velqra_admin', 'true');
         sessionStorage.setItem('velqra_token', res.data.token);
         sessionStorage.setItem('velqra_user', JSON.stringify(res.data.user));
@@ -3287,13 +3556,53 @@ export default function App() {
         setCurrentUser(res.data.user);
         setIsUserLoggedIn(true);
         setShowAdminAuth(false);
-        setLoginEmail('');
         setLoginPassword('');
-        navigate('/admin');
-        showToast('🚀 Welcome Admin!', 'success');
+        setAdminPasswordChangeRequired(Boolean(res.data.mustChangePassword));
+        setAdminSetupStatus(res.data.mustChangePassword ? 'required' : 'complete');
+        if (!res.data.mustChangePassword) {
+          localStorage.setItem(ADMIN_SETUP_CACHE_KEY, 'true');
+          navigate('/admin');
+          showToast('🚀 Welcome Admin!', 'success');
+        } else {
+          localStorage.removeItem(ADMIN_SETUP_CACHE_KEY);
+        }
       }
     } catch (err) {
-      showToast(err.response?.data?.message || 'Login failed', 'error');
+      const message = err.response?.data?.message || 'Login failed';
+      setAdminSetupError(message);
+      if (adminSetupStatus === 'complete') showToast(message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdminPasswordChange = async (e) => {
+    e.preventDefault();
+    setAdminSetupError('');
+    if (newAdminPassword !== confirmAdminPassword) {
+      setAdminSetupError('Passwords do not match.');
+      return;
+    }
+    if (newAdminPassword.length < 12) {
+      setAdminSetupError('Use a password with at least 12 characters.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const token = sessionStorage.getItem('velqra_token');
+      await axios.put(`${API_URL}/admin/password`, { newPassword: newAdminPassword }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setNewAdminPassword('');
+      setConfirmAdminPassword('');
+      setAdminPasswordChangeRequired(false);
+      setAdminSetupStatus('complete');
+      localStorage.setItem(ADMIN_SETUP_CACHE_KEY, 'true');
+      navigate('/admin');
+      showToast('Admin password updated. The storefront is now available.', 'success');
+    } catch (err) {
+      setAdminSetupError(err.response?.data?.message || 'Could not update the admin password.');
     } finally {
       setLoading(false);
     }
@@ -3333,6 +3642,7 @@ export default function App() {
     setCart([]);
     window.dispatchEvent(new Event('velqra-auth-change'));
     showToast('👋 Admin Logged out', 'info');
+    navigate('/', { replace: true });
   };
 
   const handleOrderStatusChange = async (orderId, status) => {
@@ -3470,13 +3780,14 @@ export default function App() {
   };
 
   const addToCart = async (product) => {
-    if (product.stock <= 0) {
+    const stock = Number(product.stock);
+    if (!Number.isFinite(stock) || stock <= 0) {
       showToast('Out of stock!', 'error');
-      return;
+      return false;
     }
 
     const token = sessionStorage.getItem('velqra_user_token');
-    if (token) {
+    if (token && currentUser?.role !== 'admin') {
       setCartLoading(true);
       try {
         await queueCartMutation(async () => {
@@ -3492,46 +3803,46 @@ export default function App() {
           setCart(normalizeCart(data.cart?.items || []));
         });
         showToast('✅ Added to your saved cart', 'success');
+        return true;
       } catch (cartError) {
         showToast(cartError.response?.data?.message || 'Could not add product to cart', 'error');
+        return false;
       } finally {
         setCartLoading(false);
       }
-      return;
+    }
+
+    const productKey = getCartItemKey(product);
+    const productQuantity = cart
+      .filter(item => String(item._id) === String(product._id))
+      .reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+    if (productQuantity >= stock) {
+      showToast('Not enough stock', 'error');
+      return false;
     }
 
     setCart(prev => {
-      const exists = prev.find(item =>
-        item._id === product._id &&
-        JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(product.selectedAttributes || {}) &&
-        String(item.promoApplied ? item.promoCode : '').toUpperCase() ===
-          String(product.promoApplied ? product.promoCode : '').toUpperCase()
-      );
-      if (exists) {
-        if (exists.qty >= product.stock) {
-          showToast('Not enough stock', 'error');
-          return prev;
-        }
-        return prev.map(item =>
-          item._id === product._id ? { ...item, qty: item.qty + 1 } : item
-        );
+      const current = prev.find(item => getCartItemKey(item) === productKey);
+      if (current) {
+        return prev.map(item => getCartItemKey(item) === productKey
+          ? { ...item, qty: item.qty + 1 }
+          : item);
       }
-      showToast('✅ Added to cart', 'success');
       return [...prev, { ...product, qty: 1 }];
     });
+    showToast('✅ Added to cart', 'success');
+    return true;
   };
 
   const updateQty = (cartItem, change) => {
     const token = sessionStorage.getItem('velqra_user_token');
-    if (token) {
+    if (token && currentUser?.role !== 'admin') {
       queueCartMutation(async () => {
         const { data: current } = await axios.get(`${API_URL}/cart`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const currentItem = normalizeCart(current.cart?.items || []).find(item =>
-          item._id === cartItem._id &&
-          JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(cartItem.selectedAttributes || {}) &&
-          String(item.promoCode || '').toUpperCase() === String(cartItem.promoCode || '').toUpperCase()
+          getCartItemKey(item) === getCartItemKey(cartItem)
         );
         if (!currentItem) return;
         const qty = Math.max(0, currentItem.qty + change);
@@ -3556,14 +3867,13 @@ export default function App() {
 
     setCart(prev =>
       prev.map(item => {
-        if (
-          item._id === cartItem._id &&
-          JSON.stringify(item.selectedAttributes || {}) === JSON.stringify(cartItem.selectedAttributes || {}) &&
-          String(item.promoApplied ? item.promoCode : '').toUpperCase() ===
-            String(cartItem.promoApplied ? cartItem.promoCode : '').toUpperCase()
-        ) {
+        if (getCartItemKey(item) === getCartItemKey(cartItem)) {
           const newQty = item.qty + change;
-          if (newQty > item.stock) {
+          const otherProductQty = prev
+            .filter(candidate => String(candidate._id) === String(cartItem._id) &&
+              getCartItemKey(candidate) !== getCartItemKey(cartItem))
+            .reduce((sum, candidate) => sum + (Number(candidate.qty) || 0), 0);
+          if (change > 0 && newQty + otherProductQty > item.stock) {
             showToast('Not enough stock', 'error');
             return item;
           }
@@ -3574,13 +3884,24 @@ export default function App() {
     );
   };
 
-  const filteredProducts = Array.isArray(products) ? products.filter(product => {
-    const matchSearch = product?.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        product?.category?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchCategory = activeCategory === 'All' ||
-      String(product?.category || '').toLowerCase() === activeCategory.toLowerCase();
+  const categories = [...new Set(
+    (Array.isArray(products) ? products : [])
+      .map(product => String(product?.category || '').trim())
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const selectedCurrencyRate = currency === 'INR' ? 1 : Number(exchangeRates[currency]);
+  const selectedCurrencyAvailable = Number.isFinite(selectedCurrencyRate) && selectedCurrencyRate > 0;
+  const filteredProducts = (Array.isArray(products) ? products : []).filter(product => {
+    const searchableText = [product?.name, product?.category, product?.brand]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const matchSearch = searchableText.includes(normalizedSearch);
+    const categoryKey = String(product?.category || '').toLowerCase().replace(/[\s_-]+/g, '');
+    const matchCategory = activeCategory === 'All' || categoryKey === 'facewash';
     return matchSearch && matchCategory;
-  }) : [];
+  });
 
   const totalCartItems = cart.reduce((sum, item) => sum + item.qty, 0);
   const totalCartPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
@@ -3594,7 +3915,121 @@ export default function App() {
     : 0;
   const grandTotal = Math.max(0, totalCartPrice - promoDiscountAmount) + deliveryCharge;
 
+  if (adminSetupStatus !== 'complete') {
+    const changingPassword = adminPasswordChangeRequired;
+
+    return (
+      <main className="min-h-screen bg-[#f1f1ef] px-4 py-10 text-slate-900 flex items-center justify-center">
+        <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-xl">
+          <div className="mb-6 text-center">
+            <img src={velqraLogo} alt="VELQRA" className="mx-auto mb-5 h-12 w-auto object-contain" />
+            <h1 className="text-xl font-black text-[#173b32]">
+              {adminSetupStatus === 'loading'
+                ? 'Checking store setup...'
+                : adminSetupStatus === 'error'
+                  ? 'Store setup unavailable'
+                  : changingPassword
+                    ? 'Set a new admin password'
+                    : 'Admin setup required'}
+            </h1>
+            <p className="mt-2 text-sm text-slate-500">
+              {adminSetupStatus === 'loading'
+                ? 'Please wait.'
+                : adminSetupStatus === 'error'
+                  ? 'The store cannot open until the admin setup service is reachable.'
+                  : changingPassword
+                    ? 'Choose a new password to unlock the storefront.'
+                    : 'Sign in as the admin and change the initial password before the storefront opens.'}
+            </p>
+          </div>
+
+          {adminSetupStatus === 'error' ? (
+            <button
+              type="button"
+              onClick={loadAdminSetupStatus}
+              className="w-full rounded-xl bg-[#173b32] py-3 text-sm font-bold text-white"
+            >
+              Retry
+            </button>
+          ) : adminSetupStatus === 'loading' ? (
+            <div className="py-4 text-center text-sm text-slate-500">Loading...</div>
+          ) : changingPassword ? (
+            <form onSubmit={handleAdminPasswordChange} className="space-y-4">
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                New password
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  maxLength={72}
+                  required
+                  value={newAdminPassword}
+                  onChange={event => setNewAdminPassword(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm normal-case tracking-normal text-slate-900"
+                />
+              </label>
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                Confirm new password
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  maxLength={72}
+                  required
+                  value={confirmAdminPassword}
+                  onChange={event => setConfirmAdminPassword(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm normal-case tracking-normal text-slate-900"
+                />
+              </label>
+              {adminSetupError && <p role="alert" className="text-sm text-red-600">{adminSetupError}</p>}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-[#173b32] py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {loading ? 'Saving...' : 'Save new password'}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                Username
+                <input
+                  type="text"
+                  autoComplete="username"
+                  value="admin"
+                  readOnly
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-700"
+                />
+              </label>
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                Password
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={loginPassword}
+                  onChange={event => setLoginPassword(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                />
+              </label>
+              {adminSetupError && <p role="alert" className="text-sm text-red-600">{adminSetupError}</p>}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-xl bg-[#173b32] py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {loading ? 'Signing in...' : 'Admin sign in'}
+              </button>
+            </form>
+          )}
+        </section>
+      </main>
+    );
+  }
+
   return (
+    <LocalizationContext.Provider value={localization}>
     <div className="velqra-storefront min-h-screen text-neutral-100 font-sans antialiased flex flex-col">
 
       {toast.show && (
@@ -3606,6 +4041,8 @@ export default function App() {
         </div>
       )}
 
+      {!isUserAuthPage && (
+      <>
       <div className="announcement-bar" role="region" aria-label="VELQRA announcement">
         <div className="announcement-track">
           {Array.from({ length: 2 }).map((_, copy) => (
@@ -3639,7 +4076,7 @@ export default function App() {
           </a>
         </div>
       </div>
-      <header className="velqra-main-header sticky top-[30px] z-[70] bg-white backdrop-blur-md border-b border-neutral-200 px-6 py-4 flex items-center justify-between shadow-sm">
+      <header className="velqra-main-header sticky top-[30px] z-[70] flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3 shadow-sm backdrop-blur-md sm:px-6 sm:py-4">
         <div className={`flex items-center gap-3 sm:gap-5 ${location.pathname === '/' ? 'pl-12 sm:pl-0' : ''}`}>
           {location.pathname !== '/' && (
             <button type="button" onClick={() => navigate(-1)} className="grid h-9 w-9 place-items-center text-neutral-900" aria-label="Go back">
@@ -3663,55 +4100,80 @@ export default function App() {
               </span>
               <button
                 type="button"
-                onClick={handleUserLogout}
+                onClick={isAdminLoggedIn ? handleAdminLogout : handleUserLogout}
                 className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
               >
-                LOGOUT
+                {t('Logout').toUpperCase()}
               </button>
             </div>
           ) : (
             <button
               type="button"
-              onClick={() => setIsAuthModalOpen(true)}
+              onClick={() => openUserAuth('login')}
               className="velqra-header-login inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-neutral-800 sm:px-4"
             >
-              LOGIN
+              {t('Login').toUpperCase()}
             </button>
           )}
           {isUserLoggedIn && orders.length > 0 ? (
-            <Link to="/orders" className="text-xs font-bold uppercase tracking-wide text-neutral-700">Orders</Link>
+            <Link to="/orders" className="text-xs font-bold uppercase tracking-wide text-neutral-700">{t('Orders')}</Link>
           ) : null}
           {totalCartItems > 0 && (
             <button
               type="button"
-              onClick={() => setIsCartOpen(true)}
+              onClick={openCart}
               className="hidden text-xs font-bold uppercase tracking-wide text-[#173b32] sm:inline"
             >
-              ORDER
+              {t('ORDER')}
             </button>
           )}
           <button
-            onClick={() => setIsCartOpen(true)}
+            onClick={openCart}
             className="relative flex items-center gap-2 bg-neutral-900 border border-neutral-700 px-4 py-2 rounded-full hover:border-amber-400 transition"
             aria-label="Open shopping bag"
           >
             <svg className="w-5 h-5 stroke-current text-amber-400 fill-none" viewBox="0 0 24 24" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
             </svg>
-            <span className="text-sm font-medium">BAG</span>
+            <span className="text-sm font-medium">{t('BAG').toUpperCase()}</span>
             {totalCartItems > 0 && (
               <span className="bg-amber-400 text-black text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
                 {totalCartItems}
               </span>
             )}
           </button>
+          <LocaleControls
+            language={language}
+            currency={currency}
+            onLanguageChange={setLanguage}
+            onCurrencyChange={setCurrency}
+          />
         </div>
 
         {location.pathname === '/' && (
           <button
             type="button"
+            onClick={() => {
+              setIsHeaderSearchOpen(open => !open);
+              setIsMobileMenuOpen(false);
+            }}
+            aria-label={t(isHeaderSearchOpen ? 'Close search' : 'Search products')}
+            aria-expanded={isHeaderSearchOpen}
+            aria-controls="header-catalog-search"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-800 transition hover:border-[#173b32] hover:text-[#173b32] focus:outline-none focus:ring-2 focus:ring-[#173b32]"
+          >
+            <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="10.8" cy="10.8" r="6.8" />
+              <path strokeLinecap="round" d="m16 16 4.5 4.5" />
+            </svg>
+          </button>
+        )}
+
+        {location.pathname === '/' && (
+          <button
+            type="button"
             onClick={() => setIsMobileMenuOpen((open) => !open)}
-            className="absolute left-3 top-1/2 z-[45] grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-900 md:hidden"
+            className="absolute left-3 top-3 z-[45] grid h-10 w-10 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-900 md:hidden"
             aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={isMobileMenuOpen}
           >
@@ -3733,7 +4195,7 @@ export default function App() {
               aria-label="Mobile navigation"
             >
               <div className="flex h-[72px] shrink-0 items-center justify-between border-b border-[#d9d8d2] px-6">
-                <span className="text-2xl font-semibold tracking-[0.08em] text-[#173b32]">MENU</span>
+                <span className="text-2xl font-semibold tracking-[0.08em] text-[#173b32]">{t('MENU')}</span>
                 <button
                   type="button"
                   onClick={() => setIsMobileMenuOpen(false)}
@@ -3747,9 +4209,9 @@ export default function App() {
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
                 {[
-                  ['Shop', '/'],
-                  ['Face Wash', '/#products'],
-                  ['Orders', '/orders']
+                  [t('Shop'), '/'],
+                  [t('Face Wash'), '/#products'],
+                  [t('Orders'), '/orders']
                 ].map(([label, to]) => (
                   <Link
                     key={label}
@@ -3764,11 +4226,11 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setIsMobileMenuOpen(false);
-                    setIsCartOpen(true);
+                    openCart();
                   }}
                   className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
                 >
-                  Cart{totalCartItems > 0 ? ` (${totalCartItems})` : ''}
+                  {t('Cart')}{totalCartItems > 0 ? ` (${totalCartItems})` : ''}
                 </button>
                 <div className="pt-5">
                   <button
@@ -3834,22 +4296,101 @@ export default function App() {
                   onClick={() => {
                     setIsMobileMenuOpen(false);
                     if (isUserLoggedIn) {
-                      handleUserLogout();
+                      if (isAdminLoggedIn) {
+                        handleAdminLogout();
+                      } else {
+                        handleUserLogout();
+                      }
                     } else {
-                      setIsAuthModalOpen(true);
+                      openUserAuth('login');
                     }
                   }}
                   className="block w-full border-b border-[#e1e0da] py-[18px] text-left text-xl font-medium leading-tight text-[#173b32]"
                 >
-                  {isUserLoggedIn ? 'Logout' : 'Login'}
+                  {t(isUserLoggedIn ? 'Logout' : 'Login')}
                 </button>
               </div>
             </nav>
           </>
         )}
+
+        {location.pathname === '/' && (
+          <div
+            id="header-catalog-search"
+            className={`${isHeaderSearchOpen ? 'block' : 'hidden'} absolute left-0 right-0 top-full z-[71] border-y border-neutral-200 bg-white px-4 pb-3 pt-2 shadow-lg md:left-auto md:right-0 md:w-[min(32rem,calc(100vw-2rem))] md:rounded-b-xl md:border-x`}
+          >
+            {isHeaderSearchOpen && (
+              <form
+                onSubmit={event => {
+                  event.preventDefault();
+                  setIsHeaderSearchOpen(false);
+                }}
+                className="flex items-center gap-2"
+              >
+                <div className="relative min-w-0 flex-1">
+                  <svg aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="10.8" cy="10.8" r="6.8" />
+                    <path strokeLinecap="round" d="m16 16 4.5 4.5" />
+                  </svg>
+                  <input
+                    autoFocus
+                    type="search"
+                    value={searchQuery}
+                    onChange={event => setSearchQuery(event.target.value)}
+                    placeholder={t('Search products, brands, categories...')}
+                    aria-label={t('Search products, brands, categories...')}
+                    className="h-11 w-full rounded-lg border border-neutral-300 bg-[#fafaf8] py-2.5 pl-10 pr-3 text-sm text-neutral-900 outline-none transition focus:border-[#173b32] focus:ring-2 focus:ring-[#173b32]/15"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsHeaderSearchOpen(false)}
+                  aria-label={t('Close search')}
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-neutral-200 text-neutral-700"
+                >
+                  <span aria-hidden="true" className="text-xl leading-none">×</span>
+                </button>
+              </form>
+            )}
+          </div>
+        )}
       </header>
 
+      <div className="flex justify-end border-b border-neutral-200 bg-white px-4 py-2 md:hidden">
+        <LocaleControls
+          compact
+          language={language}
+          currency={currency}
+          onLanguageChange={setLanguage}
+          onCurrencyChange={setCurrency}
+        />
+      </div>
+
+      {(currency !== 'INR' || exchangeRateStatus === 'stale' || exchangeRateStatus === 'partial') && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900" role="status">
+          <p>{t('Displayed prices use reference rates; checkout is charged in INR.')}</p>
+          {currency !== 'INR' && !selectedCurrencyAvailable && exchangeRateStatus === 'loading' && (
+            <p>{t('Loading exchange rates...')}</p>
+          )}
+          {currency !== 'INR' && !selectedCurrencyAvailable && exchangeRateStatus !== 'loading' && (
+            <p>{t('Selected currency rates are unavailable. Prices cannot be converted.')}</p>
+          )}
+          {exchangeRateStatus === 'stale' && selectedCurrencyAvailable && (
+            <p>{t('Exchange rates could not be refreshed. Showing saved reference rates.')}</p>
+          )}
+          {exchangeRateStatus === 'partial' && selectedCurrencyAvailable && (
+            <p>{t('Some exchange rates are unavailable. Choose another currency or INR.')}</p>
+          )}
+          {exchangeRateDate && selectedCurrencyAvailable && (
+            <p>{t('Reference rate date: {date}', { date: exchangeRateDate })}</p>
+          )}
+        </div>
+      )}
+      </>
+      )}
+
       {/* MAIN CONTENT */}
+      {!isUserAuthPage && (
       <div className="flex-1 bg-[#f1f1ef] text-[#171717]">
         <Routes>
           <Route path="/" element={
@@ -3857,6 +4398,7 @@ export default function App() {
               {(() => {
                 return (
                   <main className="bg-[#f1f1ef] text-[#171717]">
+                    {!normalizedSearch && (
                     <section
                       className="velqra-home-hero"
                       style={{
@@ -3865,30 +4407,46 @@ export default function App() {
                       }}
                     >
                       <div>
-                        <p>PURE BOTANICAL SCIENCE</p>
-                        <h1>VELQRA BOTANICAL<br />COLLECTION</h1>
-                        <span>Pure Botanicals Science for Radiant &amp; Healthy Skin</span>
+                        <p>{t('PURE BOTANICAL SCIENCE')}</p>
+                        <h1>{t('VELQRA BOTANICAL COLLECTION')}</h1>
+                        <span>{t('Pure Botanicals Science for Radiant & Healthy Skin')}</span>
                       </div>
                     </section>
-                    <section className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
-                      <div className="flex flex-wrap gap-3 mb-8">
-                        {['All', 'Face Wash'].map(category => (
-                          <button
-                            key={category}
-                            onClick={() => setActiveCategory(category)}
-                            className={`rounded-sm px-7 py-3 text-xs font-bold uppercase tracking-widest transition ${
-                              activeCategory === category ? 'bg-[#173b32] text-white' : 'border border-[#d9d9d4] bg-white text-[#323232] hover:border-[#173b32]'
-                            }`}
-                          >
-                            {category}
-                          </button>
-                        ))}
+                    )}
+                    <section className="max-w-7xl mx-auto px-4 pb-8 pt-4 sm:px-6 sm:py-14">
+                      <div className="mb-5 rounded-xl border border-[#d9d9d4] bg-white p-3 sm:mb-8 sm:p-5">
+                        <div role="group" aria-label={t('Category filter')} className="flex flex-wrap items-center gap-2">
+                            {[
+                              { value: 'All', label: t('All') },
+                              { value: 'Face Wash', label: t('Face Wash') }
+                            ].map(option => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => setActiveCategory(option.value)}
+                                aria-pressed={activeCategory === option.value}
+                                className={`min-h-10 rounded-full border px-5 text-sm font-bold transition focus:outline-none focus:ring-2 focus:ring-[#173b32] focus:ring-offset-2 ${
+                                  activeCategory === option.value
+                                    ? 'border-[#173b32] bg-[#173b32] text-white shadow-sm'
+                                    : 'border-[#d9d9d4] bg-white text-[#454640] hover:border-[#173b32] hover:text-[#173b32]'
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                        </div>
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-[#73736c]">
+                          <span>{t('Showing {count} of {total} products', { count: filteredProducts.length, total: products.length })}</span>
+                          {searchQuery && <span className="max-w-full truncate">{t('Search:')} {searchQuery}</span>}
+                        </div>
                       </div>
                       {loading ? (
-                        <div className="py-20 text-center text-sm font-bold uppercase tracking-widest">Loading products...</div>
+                        <div className="py-20 text-center text-sm font-bold uppercase tracking-widest">{t('Loading products...')}</div>
                       ) : filteredProducts.length === 0 ? (
                         <div className="rounded-lg border border-neutral-200 bg-white py-16 text-center">
-                          <p className="font-serif text-2xl">No products available</p>
+                          <p className="font-serif text-2xl">
+                            {t(products.length === 0 ? 'No products available' : 'No products match your filters')}
+                          </p>
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4">
@@ -3906,8 +4464,8 @@ export default function App() {
                                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8a8a82]">{product.category || 'Botanical'}</p>
                                   <h2 className="mt-2 min-h-[44px] font-serif text-base sm:text-xl leading-tight text-[#1d1d1b]">{product.name}</h2>
                                   <div className="mt-4 flex items-baseline gap-2">
-                                    <strong className="text-base sm:text-lg text-[#173b32]">₹{price}</strong>
-                                    {originalPrice > price && <span className="text-xs text-[#999] line-through">₹{originalPrice}</span>}
+                                    <strong className="text-base sm:text-lg text-[#173b32]">{formatPrice(price)}</strong>
+                                    {originalPrice > price && <span className="text-xs text-[#999] line-through">{formatPrice(originalPrice)}</span>}
                                   </div>
                                 </div>
                               </Link>
@@ -3922,19 +4480,24 @@ export default function App() {
             </>
           } />
 
-          <Route path="/product/:id" element={<ProductDetailPage addToCart={addToCart} openCart={() => setIsCartOpen(true)} />} />
+          <Route path="/product/:id" element={<ProductDetailPage addToCart={addToCart} openCheckout={() => {
+            openCart();
+            setCheckoutOpen(true);
+          }} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/privacy-policy" element={<PolicyPage policy="privacy" />} />
           <Route path="/terms-policy" element={<PolicyPage policy="terms" />} />
           <Route path="/return-refund-policy" element={<PolicyPage policy="returns" />} />
           <Route path="/shipping-policy" element={<PolicyPage policy="shipping" />} />
           <Route path="/contact-policy" element={<PolicyPage policy="contact" />} />
-          <Route path="/auth" element={<Navigate to="/" />} />
+          <Route path="/auth" element={<Navigate to="/login" replace />} />
+          <Route path="/login" element={<main className="min-h-screen" />} />
+          <Route path="/register" element={<main className="min-h-screen" />} />
           <Route path="/admin/login" element={
             isAdminLoggedIn ? <Navigate to="/admin" replace /> : <main className="min-h-[50vh]" />
           } />
 
-          <Route path="/orders" element={<OrdersPage setIsAuthModalOpen={setIsAuthModalOpen} setUserAuthMode={setUserAuthMode} />} />
+          <Route path="/orders" element={<OrdersPage onLoginRequest={() => openUserAuth('login')} />} />
           <Route path="/orders/track/:orderId" element={<OrderTracking />} />
 
           <Route path="/admin" element={
@@ -4396,24 +4959,21 @@ export default function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </div>
+      )}
 
       {/* USER AUTH MODAL */}
-      {isAuthModalOpen && (
+      {isAuthModalOpen && isUserAuthPage && (
         <div
-          className="velqra-auth-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
-          onClick={() => {
-            sessionStorage.setItem('velqra_login_prompt_seen', 'true');
-            setIsAuthModalOpen(false);
-          }}
+          className="fixed inset-0 z-[100] flex min-h-screen items-center justify-center overflow-y-auto bg-[#f1f1ef] p-4 sm:p-8"
         >
           <div
-            className="velqra-auth-modal rounded-2xl max-w-md w-full p-6 relative max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
+            className="velqra-auth-modal relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl p-6"
           >
             <button
               onClick={() => {
                 sessionStorage.setItem('velqra_login_prompt_seen', 'true');
                 setIsAuthModalOpen(false);
+                navigate('/');
               }}
               className="absolute top-4 right-4 text-slate-400 hover:text-black font-bold text-lg"
             >
@@ -4477,7 +5037,6 @@ export default function App() {
                   Don't have an account?{' '}
                   <button
                     onClick={() => {
-                      setUserAuthMode('register');
                       setRegStep('form');
                       setError('');
                       setRegName('');
@@ -4487,6 +5046,7 @@ export default function App() {
                       setRegConfirmPassword('');
                       setRegEmailOtp('');
                       setRegSmsOtp('');
+                      openUserAuth('register');
                     }}
                     className="font-bold text-[#0B3C5D] hover:underline"
                   >
@@ -4498,6 +5058,7 @@ export default function App() {
                   onClick={() => {
                     sessionStorage.setItem('velqra_login_prompt_seen', 'true');
                     setIsAuthModalOpen(false);
+                    navigate('/');
                   }}
                   className="mt-4 w-full border-t border-slate-100 pt-4 text-center text-xs font-bold text-slate-500 hover:text-[#173b32]"
                 >
@@ -4531,7 +5092,7 @@ export default function App() {
                     />
                   </label>
                   <label className="block text-xs font-semibold text-slate-700">
-                    Email address
+                    Gmail address
                     <input
                       type="email"
                       autoComplete="email"
@@ -4540,7 +5101,7 @@ export default function App() {
                       maxLength={254}
                       value={regEmail}
                       onChange={(e) => setRegEmail(e.target.value)}
-                      placeholder="you@example.com"
+                      placeholder="you@gmail.com"
                       className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
                     />
                   </label>
@@ -4602,8 +5163,8 @@ export default function App() {
                   Already have an account?{' '}
                   <button
                     onClick={() => {
-                      setUserAuthMode('login');
                       setError('');
+                      openUserAuth('login');
                     }}
                     className="font-bold text-[#0B3C5D] hover:underline"
                   >
@@ -4702,6 +5263,7 @@ export default function App() {
         onClose={() => {
           setIsForgotPasswordOpen(false);
           setIsAuthModalOpen(true);
+          setUserAuthMode('login');
         }}
         onBackToLogin={() => {
           setIsForgotPasswordOpen(false);
@@ -4723,7 +5285,7 @@ export default function App() {
       {/* ADMIN AUTH MODAL */}
       {showAdminAuth && (
         <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm"
           onClick={() => {
             setShowAdminAuth(false);
             setAdminAuthMode('login');
@@ -4749,31 +5311,29 @@ export default function App() {
                 Admin Login
               </h3>
             </div>
-            <p className="text-[11px] text-slate-400 mb-4">
+            <p className="mb-4 text-[11px] text-slate-600">
               Enter your admin credentials to access the admin panel
             </p>
 
             <form onSubmit={handleAdminLogin} className="space-y-3.5">
               <div>
-                <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Email</label>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-slate-700">Username</label>
                 <input
-                  type="email"
-                  required
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                  placeholder="admin@velqra.com"
-                  className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-xs focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
+                  type="text"
+                  value="admin"
+                  readOnly
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-900 transition placeholder:text-slate-400 focus:border-[#0B3C5D] focus:bg-white focus:outline-none"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Password</label>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-slate-700">Password</label>
                 <input
                   type="password"
                   required
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-xs focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-900 transition placeholder:text-slate-400 focus:border-[#0B3C5D] focus:bg-white focus:outline-none"
                 />
               </div>
               <button
@@ -4792,7 +5352,7 @@ export default function App() {
       {isCartOpen && (
         <div
           className="fixed inset-0 bg-slate-900/60 z-50 flex justify-end backdrop-blur-sm"
-          onClick={() => setIsCartOpen(false)}
+          onClick={closeCart}
         >
           <div
             className="velqra-cart-panel bg-white w-full max-w-md h-full shadow-2xl p-6 flex flex-col text-slate-900"
@@ -4800,8 +5360,8 @@ export default function App() {
           >
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-                <h2 className="relative top-1 text-lg font-black text-[#0B3C5D]">🛒 Cart</h2>
-                <button onClick={() => setIsCartOpen(false)} className="text-gray-400 hover:text-black font-bold text-lg">
+                <h2 className="relative top-1 text-lg font-black text-[#0B3C5D]">🛒 {t('Cart')}</h2>
+                <button onClick={closeCart} className="text-gray-400 hover:text-black font-bold text-lg">
                   ✕
                 </button>
               </div>
@@ -4814,12 +5374,12 @@ export default function App() {
               ) : cart.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center">
                   <div className="text-6xl mb-4">🛍️</div>
-                  <p className="text-slate-400 text-sm font-medium">Cart is empty</p>
+                  <p className="text-slate-400 text-sm font-medium">{t('Cart is empty')}</p>
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto space-y-3 pr-2">
                   {cart.map(item => (
-                    <div key={item._id} className="flex items-center justify-between bg-slate-50 border border-slate-100 p-3 rounded-xl hover:shadow-sm transition">
+                    <div key={getCartItemKey(item)} className="flex items-center justify-between bg-slate-50 border border-slate-100 p-3 rounded-xl hover:shadow-sm transition">
                       <div className="flex items-center gap-3 flex-1 min-w-0">
                         <img src={getProductDisplayImage(item)} alt={item.name} className="w-10 h-10 object-cover rounded-lg border border-slate-200" loading="lazy" />
                         <div className="flex-1 min-w-0">
@@ -4831,7 +5391,7 @@ export default function App() {
                               ))}
                             </div>
                           )}
-                          <p className="text-[11px] text-slate-400">₹{item.price} × {item.qty}</p>
+                          <p className="text-[11px] text-slate-400">{formatPrice(item.price)} × {item.qty}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg p-1 flex-shrink-0">
@@ -4848,21 +5408,21 @@ export default function App() {
             {cart.length > 0 && (
               <div className="border-t border-slate-100 pt-4 space-y-3 flex-shrink-0">
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate-500">Subtotal</span>
-                  <span className="font-bold">₹{totalCartPrice}</span>
+                  <span className="text-slate-500">{t('Subtotal')}</span>
+                  <span className="font-bold">{formatPrice(totalCartPrice)}</span>
                 </div>
 
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate-500">Delivery Charge</span>
+                  <span className="text-slate-500">{t('Delivery Charge')}</span>
                   <span className={`font-bold ${deliveryCharge === 0 ? 'text-green-600' : 'text-[#FF5722]'}`}>
-                    {deliveryCharge === 0 ? '🎉 Free' : `₹${deliveryCharge}`}
+                    {deliveryCharge === 0 ? `🎉 ${t('Free')}` : formatPrice(deliveryCharge)}
                   </span>
                 </div>
 
                 {deliveryCharge === 0 && (
                   <div className="bg-green-50 rounded-lg p-2 text-center">
                     <p className="text-[10px] text-green-600 font-bold">
-                      🎉 Free delivery! (Order above ₹199)
+                      🎉 {t('Free delivery! (Order above INR 199)')}
                     </p>
                   </div>
                 )}
@@ -4870,41 +5430,44 @@ export default function App() {
                 {deliveryCharge > 0 && (
                   <div className="bg-slate-50 rounded-lg p-2 text-center">
                     <p className="text-[10px] text-slate-500">
-                      Add ₹{199 - totalCartPrice} more for free delivery 🚚
+                      {t('Add {amount} more for free delivery', { amount: formatPrice(199 - totalCartPrice) })} 🚚
                     </p>
                   </div>
                 )}
 
                 {totalSavings > 0 && (
                   <div className="flex justify-between items-center text-xs text-green-600">
-                    <span>💰 You saved</span>
-                    <span className="font-bold">₹{totalSavings}</span>
+                    <span>💰 {t('Total Savings')}</span>
+                    <span className="font-bold">{formatPrice(totalSavings)}</span>
                   </div>
                 )}
 
                 <div className="flex justify-between items-center font-bold text-sm pt-2 border-t border-slate-100">
-                  <span className="text-slate-600">Grand Total:</span>
-                  <span className="text-[#0B3C5D] text-lg font-black">₹{grandTotal}</span>
+                  <span className="text-slate-600">{t('Grand Total:')}</span>
+                  <span className="text-[#0B3C5D] text-lg font-black">{formatPrice(grandTotal)}</span>
                 </div>
+                {currency !== 'INR' && (
+                  <p className="text-[10px] text-center text-amber-700">{t('Displayed prices use reference rates; checkout is charged in INR.')}</p>
+                )}
                 {checkoutOpen ? (
                   <form onSubmit={handlePlaceOrder} className="space-y-3 max-h-[45vh] overflow-y-auto pr-1">
                     {/* Delivery Form */}
                     <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
-                      <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">Delivery Details</p>
+                      <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">{t('Delivery Details')}</p>
                       <div className="grid gap-2">
                         <input
                           required
                           value={deliveryForm.fullName}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, fullName: e.target.value }))}
-                          placeholder="Full Name *"
+                          placeholder={t('Full Name *')}
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <input
                           required
-                          value={deliveryForm.phone}
+                          value={deliveryForm.phone || getRegisteredPhone(currentUser)}
                           readOnly
                           title="Registered phone number cannot be changed"
-                          placeholder="Phone Number *"
+                          placeholder={registeredPhoneLoading ? t('Loading registered phone...') : t('Phone Number *')}
                           className="w-full bg-slate-100 border border-slate-200 px-3 py-2 rounded-lg text-sm text-slate-600 cursor-not-allowed"
                         />
                         <input
@@ -4912,28 +5475,28 @@ export default function App() {
                           type="tel"
                           value={deliveryForm.alternatePhone}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, alternatePhone: e.target.value.replace(/\D/g, '').slice(0, 10) }))}
-                          placeholder={`Alternate Phone Number${paymentMethod === 'cod' ? ' *' : ''}`}
+                          placeholder={`${t('Alternate Phone Number')}${paymentMethod === 'cod' ? ' *' : ''}`}
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <input
                           type="email"
                           value={deliveryForm.email}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, email: e.target.value }))}
-                          placeholder="Email"
+                          placeholder={t('Email')}
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <textarea
                           required
                           value={deliveryForm.address}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, address: e.target.value }))}
-                          placeholder="Complete Address *"
+                          placeholder={t('Complete Address *')}
                           rows="2"
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm resize-none focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <input
                           value={deliveryForm.landmark}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, landmark: e.target.value }))}
-                          placeholder="Landmark (optional)"
+                          placeholder={t('Landmark (optional)')}
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <div className="grid grid-cols-2 gap-2">
@@ -4941,14 +5504,14 @@ export default function App() {
                             required
                             value={deliveryForm.city}
                             onChange={(e) => setDeliveryForm(prev => ({ ...prev, city: e.target.value }))}
-                            placeholder="City *"
+                            placeholder={t('City *')}
                             className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                           />
                           <input
                             required
                             value={deliveryForm.state}
                             onChange={(e) => setDeliveryForm(prev => ({ ...prev, state: e.target.value }))}
-                            placeholder="State *"
+                            placeholder={t('State *')}
                             className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                           />
                         </div>
@@ -4956,13 +5519,13 @@ export default function App() {
                           required
                           value={deliveryForm.pincode}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, pincode: e.target.value }))}
-                          placeholder="Pincode *"
+                          placeholder={t('Pincode *')}
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-[#0B3C5D]"
                         />
                         <textarea
                           value={deliveryForm.note}
                           onChange={(e) => setDeliveryForm(prev => ({ ...prev, note: e.target.value }))}
-                          placeholder="Delivery note (optional)"
+                          placeholder={t('Delivery note (optional)')}
                           rows="2"
                           className="w-full bg-white border border-slate-200 px-3 py-2 rounded-lg text-sm resize-none focus:outline-none focus:border-[#0B3C5D]"
                         />
@@ -4971,7 +5534,7 @@ export default function App() {
 
                     {/* Payment Method */}
                     <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
-                      <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">Payment Method</p>
+                      <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">{t('Payment Method')}</p>
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
@@ -4982,7 +5545,7 @@ export default function App() {
                               : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
                           }`}
                         >
-                          💵 Cash on Delivery
+                          💵 {t('Cash on Delivery')}
                         </button>
 
                                                 <button
@@ -4995,7 +5558,7 @@ export default function App() {
                           }`}
                         >
                           <span className="flex items-center justify-center gap-1">
-                            <span>🔒</span> Pay Online
+                            <span>🔒</span> {t('Online Payment')}
                           </span>
                         </button>
                       </div>
@@ -5005,10 +5568,9 @@ export default function App() {
                           <div className="flex items-start gap-2">
                             <span className="text-lg">🔒</span>
                             <div>
-                              <p className="text-xs font-bold text-blue-700">Secure Payment via PayU</p>
+                              <p className="text-xs font-bold text-blue-700">{t('Secure Payment via PayU')}</p>
                               <p className="text-[10px] text-blue-600 mt-1 leading-relaxed">
-                                After placing the order, you will be redirected to PayU's secure payment page.
-                                Pay using UPI, Credit/Debit Card, Net Banking, or Wallet.
+                                {t("After placing the order, you will be redirected to PayU's secure payment page. Pay using UPI, Credit/Debit Card, Net Banking, or Wallet.")}
                               </p>
                             </div>
                           </div>
@@ -5031,9 +5593,9 @@ export default function App() {
                             <span className="animate-spin">⏳</span> Processing...
                           </>
                         ) : paymentMethod === 'online' ? (
-                          <>🔒 Place Order & Pay ₹{grandTotal} via PayU</>
+                          <>🔒 {t('Place Order & Pay')} {formatPrice(grandTotal)} via PayU (INR)</>
                         ) : (
-                          <>📦 Place Order (₹{grandTotal})</>
+                          <>📦 {t('Place Order')} ({formatPrice(grandTotal)})</>
                         )}
                       </button>
 
@@ -5042,7 +5604,7 @@ export default function App() {
                         onClick={resetCheckout}
                         className="w-full bg-slate-100 text-slate-600 font-bold py-2.5 rounded-xl text-sm hover:bg-slate-200 transition"
                       >
-                        Cancel
+                        {t('Cancel')}
                       </button>
                     </div>
                   </form>
@@ -5051,7 +5613,7 @@ export default function App() {
                     onClick={() => setCheckoutOpen(true)}
                     className="w-full bg-[#FF5722] text-white font-bold py-3.5 rounded-xl flex items-center justify-center gap-2 text-sm hover:bg-[#e64a19] transition shadow-md"
                   >
-                    ✅ Proceed to Checkout
+                    ✅ {t('Proceed to Checkout')}
                   </button>
                 )}
               </div>
@@ -5061,6 +5623,7 @@ export default function App() {
       )}
 
       {/* FOOTER */}
+      {!isUserAuthPage && (
       <footer className="border-t border-neutral-800 bg-neutral-950 py-12 px-6 mt-20">
         <div className="max-w-6xl mx-auto grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-5">
           <div>
@@ -5139,6 +5702,8 @@ export default function App() {
             © {new Date().getFullYear()} VELQRA. All Rights Reserved.
           </div>
         </footer>
+      )}
     </div>
+    </LocalizationContext.Provider>
   );
 }
