@@ -24,7 +24,7 @@ import velqraLogo from './assets/velqra-logo.png';
 const API_URL = (
   import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD
-    ? 'https://atelimarket-backend.onrender.com/api'
+    ? 'https://velqra-aeap.onrender.com/api'
     : 'http://localhost:5000/api')
 ).replace(/\/$/, '');
 const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;

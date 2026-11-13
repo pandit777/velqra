@@ -2,7 +2,7 @@
 const API_BASE = (
   import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD
-    ? 'https://atelimarket-backend.onrender.com/api'
+    ? 'https://velqra-aeap.onrender.com/api'
     : 'http://localhost:5000/api')
 ).replace(/\/+$/, '');
 const BACKEND_ORIGIN = API_BASE.replace(/\/api$/, '');
