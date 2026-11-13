@@ -420,6 +420,16 @@ const uploadVideo = multer({
     cb(error);
   }
 });
+const productVideoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (allowedVideoTypes.has(file.mimetype)) return cb(null, true);
+    const error = new Error('Only MP4, WebM, MOV, and OGG videos are allowed');
+    error.status = 400;
+    cb(error);
+  }
+});
 
 console.log(`📁 Uploads: ${uploadsDir}`);
 
@@ -1324,6 +1334,42 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
+app.post('/api/admin/products/upload-video', requireAdmin, productVideoUpload.single('video'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'Select a video to upload' });
+  }
+
+  try {
+    const bucket = 'product-videos';
+    const { error: bucketError } = await supabase.storage.getBucket(bucket);
+    if (bucketError) {
+      const { error: createBucketError } = await supabase.storage.createBucket(bucket, {
+        public: true,
+        fileSizeLimit: '52428800',
+        allowedMimeTypes: [...allowedVideoTypes.keys()]
+      });
+      if (createBucketError) {
+        const { error: verifyBucketError } = await supabase.storage.getBucket(bucket);
+        if (verifyBucketError) throw createBucketError;
+      }
+    }
+
+    const filePath = `${crypto.randomUUID()}${allowedVideoTypes.get(req.file.mimetype)}`;
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, req.file.buffer, {
+      cacheControl: '31536000',
+      contentType: req.file.mimetype,
+      upsert: false
+    });
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    return res.status(201).json({ success: true, videoUrl: data.publicUrl });
+  } catch (error) {
+    console.error('Product video upload failed:', error);
+    return res.status(500).json({ success: false, message: 'Video upload failed. Please try again.' });
+  }
+});
+
 app.post('/api/products/add', requireAdmin, async (req, res) => {
   try {
     const {
@@ -1332,15 +1378,34 @@ app.post('/api/products/add', requireAdmin, async (req, res) => {
       promoCode, promoDiscount, videoUrl, videoType, attributes
     } = req.body;
 
-    if (!name || !originalPrice || !imageUrl) {
-      return res.status(400).json({ success: false, message: 'Name, price, image required' });
+    if (!name || !originalPrice || (!imageUrl && !videoUrl)) {
+      return res.status(400).json({ success: false, message: 'Name, price, and an image or video are required' });
+    }
+
+    const normalizedImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
+    const parsedOriginalPrice = Number(originalPrice);
+    const discount = discountPercent === undefined ? 0 : Number(discountPercent);
+    const parsedStock = stock === undefined || stock === null || stock === '' ? 10 : Number(stock);
+    if (!Number.isFinite(parsedOriginalPrice) || parsedOriginalPrice <= 0 ||
+      !Number.isFinite(discount) || discount < 0 || discount > 100 ||
+      !Number.isInteger(parsedStock) || parsedStock < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Price, discount, or stock value is invalid'
+      });
     }
 
     const normalizedPromoCode = promoCode ? String(promoCode).trim().toUpperCase() : '';
     const normalizedPromoDiscount = parseFloat(promoDiscount) || 0;
+    if ((normalizedPromoCode && (normalizedPromoDiscount <= 0 || normalizedPromoDiscount > 100)) ||
+      (!normalizedPromoCode && normalizedPromoDiscount > 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Promo code and discount must both be provided, with discount between 1 and 100.'
+      });
+    }
 
-    let finalPrice = parseFloat(originalPrice);
-    const discount = parseFloat(discountPercent) || 0;
+    let finalPrice = parsedOriginalPrice;
     if (discount > 0) finalPrice -= finalPrice * (discount / 100);
 
     let parsedImages = [];
@@ -1348,7 +1413,7 @@ app.post('/api/products/add', requireAdmin, async (req, res) => {
       try { parsedImages = typeof images === 'string' ? JSON.parse(images) : images; }
       catch { parsedImages = images.split(',').map(i => i.trim()); }
     }
-    if (imageUrl && parsedImages.length === 0) parsedImages = [imageUrl.trim()];
+    if (normalizedImageUrl && parsedImages.length === 0) parsedImages = [normalizedImageUrl];
 
     let parsedTags = [];
     if (tags) {
@@ -1357,11 +1422,11 @@ app.post('/api/products/add', requireAdmin, async (req, res) => {
     }
 
     const productData = {
-      name: name.trim(), original_price: parseFloat(originalPrice),
+      name: name.trim(), original_price: parsedOriginalPrice,
       price: Math.round(finalPrice), discount_percent: discount,
-      category: category || 'Face Wash', stock: parseInt(stock) || 10,
+      category: category || 'Face Wash', stock: parsedStock,
       description: description || '', icon: icon || '📦',
-      image: imageUrl.trim(), image_url: imageUrl.trim(), images: parsedImages,
+      image: normalizedImageUrl, image_url: normalizedImageUrl, images: parsedImages,
       brand: brand || '', weight: weight || null, color: color || '',
       size: size || '', material: material || '', warranty: warranty || '',
       tags: parsedTags, promo_code: normalizedPromoCode,
@@ -1372,7 +1437,17 @@ app.post('/api/products/add', requireAdmin, async (req, res) => {
     };
 
     const { data: product, error } = await supabase.from('products').insert(productData).select().single();
-    if (error) return res.status(500).json({ success: false, message: 'Failed to add product' });
+    if (error) {
+      console.error('Add product insert failed:', error);
+      const schemaIsOutdated = error.code === 'PGRST204' || error.code === '42703' ||
+        /schema cache|column .* does not exist/i.test(error.message || '');
+      return res.status(500).json({
+        success: false,
+        message: schemaIsOutdated
+          ? 'Product database schema is outdated. Run the latest Supabase schema and retry.'
+          : 'Failed to add product'
+      });
+    }
 
     res.status(201).json({ success: true, message: 'Product added', product: formatProduct(product) });
   } catch (error) {
@@ -1423,7 +1498,17 @@ app.put('/api/products/update/:id', requireAdmin, async (req, res) => {
     if (updates.attributes !== undefined) updateData.attributes = updates.attributes;
 
     const { data: product, error } = await supabase.from('products').update(updateData).eq('id', req.params.id).select().single();
-    if (error) return res.status(500).json({ success: false, message: 'Error updating' });
+    if (error) {
+      console.error('Product update failed:', error);
+      const schemaIsOutdated = error.code === 'PGRST204' || error.code === '42703' ||
+        /schema cache|column .* does not exist/i.test(error.message || '');
+      return res.status(500).json({
+        success: false,
+        message: schemaIsOutdated
+          ? 'Product database schema is outdated. Run the latest Supabase schema and retry.'
+          : 'Error updating'
+      });
+    }
 
     res.json({ success: true, message: 'Updated', product: formatProduct(product) });
   } catch (error) {

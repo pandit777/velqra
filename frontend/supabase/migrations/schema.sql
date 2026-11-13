@@ -62,6 +62,11 @@ create table if not exists public.products (
   updated_at timestamptz not null default now()
 );
 
+alter table public.products
+  add column if not exists video_url text,
+  add column if not exists video_type text not null default 'youtube',
+  add column if not exists attributes jsonb not null default '{}'::jsonb;
+
 create index if not exists products_category_idx on public.products (category);
 create index if not exists products_created_at_idx on public.products (created_at desc);
 

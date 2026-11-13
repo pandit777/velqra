@@ -27,6 +27,7 @@ const API_URL = (
     ? 'https://velqra-aeap.onrender.com/api'
     : 'http://localhost:5000/api')
 ).replace(/\/$/, '');
+const BACKEND_ORIGIN = API_URL.replace(/\/api$/, '');
 const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
 const EXCHANGE_RATES_CACHE_KEY = 'velqra_exchange_rates';
@@ -123,7 +124,10 @@ const normalizeProduct = (product) => ({
       (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100)
   ),
   promoCode: product.promoCode || product.promo_code || '',
-  promoDiscount: Number(product.promoDiscount ?? product.promo_discount ?? 0)
+  promoDiscount: Number(product.promoDiscount ?? product.promo_discount ?? 0),
+  imageUrl: product.imageUrl || product.image_url || '',
+  videoUrl: product.videoUrl || product.video_url || '',
+  videoType: product.videoType || product.video_type || 'youtube'
 });
 
 // =============================================
@@ -137,7 +141,7 @@ const getProductDisplayImage = (product) => {
     imagePaths.push(...product.images);
   }
   if (product.image) imagePaths.push(product.image);
-  if (product.imageUrl) imagePaths.push(product.imageUrl);
+  if (product.imageUrl || product.image_url) imagePaths.push(product.imageUrl || product.image_url);
   if (product.img) imagePaths.push(product.img);
   
   const validPaths = imagePaths.filter(Boolean);
@@ -1490,13 +1494,14 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedImage, setSelectedImage] = useState('');
   const [mainImage, setMainImage] = useState('');
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [selectedAttributes, setSelectedAttributes] = useState({});
   const [promoInput, setPromoInput] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
   const [addingToCart, setAddingToCart] = useState(false);
   const navigate = useNavigate();
+  const mediaGalleryRef = useRef(null);
 
   useEffect(() => {
     const fetchProductDetails = async () => {
@@ -1506,7 +1511,7 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
         setProduct(productData);
         const cachedImage = getProductDisplayImage(productData);
         setMainImage(cachedImage);
-        setSelectedImage(cachedImage);
+        setActiveMediaIndex(0);
         if (productData.attributes && typeof productData.attributes === 'object') {
           setSelectedAttributes(Object.fromEntries(
             Object.entries(productData.attributes)
@@ -1546,7 +1551,7 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
           
           const mainImg = getProductDisplayImage(productData);
           setMainImage(mainImg);
-          setSelectedImage(mainImg);
+          setActiveMediaIndex(0);
           
           if (productData.attributes && typeof productData.attributes === 'object') {
             const initialAttrs = {};
@@ -1652,11 +1657,22 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
     );
   }
 
-  const images = product.images?.filter(Boolean) || [mainImage];
+  const images = (Array.isArray(product.images) ? product.images : []).filter(Boolean);
+  if (images.length === 0) images.push(product.image || product.imageUrl || mainImage);
   const hasAttributes = product.attributes && Object.keys(product.attributes).length > 0;
-  const hasVideo = product.videoUrl && product.videoUrl.trim() !== '';
-  const youtubeId = getYouTubeId(product.videoUrl);
-  const vimeoId = getVimeoId(product.videoUrl);
+  const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
+  const videoUrl = hasVideo && product.videoUrl.startsWith('/')
+    ? `${BACKEND_ORIGIN}${product.videoUrl}`
+    : product.videoUrl;
+  const youtubeId = getYouTubeId(videoUrl);
+  const vimeoId = getVimeoId(videoUrl);
+  const mediaItems = [
+    ...(hasVideo ? [{
+      type: product.videoType === 'uploaded' ? 'uploadedVideo' : 'linkedVideo',
+      url: videoUrl
+    }] : []),
+    ...images.map(url => ({ type: 'image', url }))
+  ];
   const promoPrice = promoApplied
     ? Math.round(product.price * (1 - (Number(product.promoDiscount) || 0) / 100))
     : product.price;
@@ -1674,37 +1690,83 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
 
       <div className="grid w-full grid-cols-1 gap-8 md:grid-cols-2">
         <div className="min-w-0 space-y-4">
-          <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <img 
-              src={selectedImage || mainImage} 
-              alt={product.name}
-              className="h-96 w-full max-w-full object-contain rounded-xl"
-              onError={(e) => {
-                e.target.onerror = null;
-                e.target.src = getProductDisplayImage(product);
-              }}
-            />
-          </div>
-          
-          {images.length > 1 && (
-            <div className="flex gap-3 overflow-x-auto pb-2">
-              {images.map((img, index) => (
-                <button
-                  key={index}
-                  onClick={() => setSelectedImage(img)}
-                  className={`flex-shrink-0 w-20 h-20 rounded-xl border-2 overflow-hidden transition ${
-                    selectedImage === img ? 'border-[#0B3C5D] shadow-md' : 'border-slate-200 hover:border-slate-400'
-                  }`}
-                >
-                  <img 
-                    src={img} 
+          <div
+            ref={mediaGalleryRef}
+            onScroll={(event) => setActiveMediaIndex(Math.round(
+              event.currentTarget.scrollLeft / event.currentTarget.clientWidth
+            ))}
+            className="flex aspect-square max-h-[28rem] w-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden rounded-2xl border border-slate-200 bg-white shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {mediaItems.map((media, index) => (
+              <div key={`${media.type}-${index}`} className="flex h-full w-full shrink-0 snap-center items-center justify-center">
+                {media.type === 'uploadedVideo' ? (
+                  <video
+                    src={media.url}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    className="h-full w-full object-contain"
+                  />
+                ) : media.type === 'linkedVideo' ? (
+                  product.videoType === 'youtube' && youtubeId ? (
+                    <iframe
+                      src={`https://www.youtube.com/embed/${youtubeId}`}
+                      title={product.name}
+                      className="h-full w-full"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      loading="lazy"
+                    />
+                  ) : product.videoType === 'vimeo' && vimeoId ? (
+                    <iframe
+                      src={`https://player.vimeo.com/video/${vimeoId}`}
+                      title={product.name}
+                      className="h-full w-full"
+                      allow="autoplay; fullscreen; picture-in-picture"
+                      allowFullScreen
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center text-slate-400">
+                      <span className="text-4xl mb-2">🎬</span>
+                      <p className="text-sm">Video not available</p>
+                      <p className="max-w-full break-all px-4 text-xs text-slate-300 mt-1">{videoUrl || 'No video URL provided'}</p>
+                    </div>
+                  )
+                ) : (
+                  <img
+                    src={media.url}
                     alt={`${product.name} ${index + 1}`}
-                    className="w-full h-full object-contain bg-white p-1"
+                    className="h-full w-full rounded-xl object-contain p-4"
                     onError={(e) => {
                       e.target.onerror = null;
                       e.target.src = getProductDisplayImage(product);
                     }}
                   />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {mediaItems.length > 1 && (
+            <div className="flex gap-3 overflow-x-auto pb-2 touch-pan-x">
+              {mediaItems.map((media, index) => (
+                <button
+                  key={`${media.type}-${index}`}
+                  onClick={() => {
+                    const gallery = mediaGalleryRef.current;
+                    if (gallery) gallery.scrollTo({ left: index * gallery.clientWidth, behavior: 'smooth' });
+                    setActiveMediaIndex(index);
+                  }}
+                  className={`relative h-20 w-20 flex-shrink-0 overflow-hidden rounded-xl border-2 transition ${
+                    activeMediaIndex === index ? 'border-[#0B3C5D] shadow-md' : 'border-slate-200 hover:border-slate-400'
+                  }`}
+                >
+                  {media.type === 'image' ? (
+                    <img src={media.url} alt={`${product.name} ${index + 1}`} className="h-full w-full bg-white object-contain p-1" />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center bg-slate-900 text-2xl text-white" aria-label="Video">▶</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -1833,42 +1895,6 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
               <div className="mt-3 text-xs text-slate-400">
                 {Object.keys(selectedAttributes).length > 0 && (
                   <span>{t('Selected:')} {Object.entries(selectedAttributes).map(([key, value]) => `${key}: ${value}`).join(', ')}</span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ✅ VIDEO */}
-          {hasVideo && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5">
-              <h3 className="font-bold text-sm text-slate-700 mb-3 flex items-center gap-2">
-                <span>🎬</span> {t('Product Video')}
-              </h3>
-              <div className="aspect-w-16 aspect-h-9 rounded-xl overflow-hidden bg-slate-100">
-                {product.videoType === 'youtube' && youtubeId ? (
-                  <iframe
-                    src={`https://www.youtube.com/embed/${youtubeId}`}
-                    title={product.name}
-                    className="w-full h-full min-h-[200px]"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    loading="lazy"
-                  />
-                ) : product.videoType === 'vimeo' && vimeoId ? (
-                  <iframe
-                    src={`https://player.vimeo.com/video/${vimeoId}`}
-                    title={product.name}
-                    className="w-full h-full min-h-[200px]"
-                    allow="autoplay; fullscreen; picture-in-picture"
-                    allowFullScreen
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="w-full h-full min-h-[200px] flex flex-col items-center justify-center text-slate-400">
-                    <span className="text-4xl mb-2">🎬</span>
-                    <p className="text-sm">Video not available</p>
-                    <p className="text-xs text-slate-300 mt-1">{product.videoUrl || 'No video URL provided'}</p>
-                  </div>
                 )}
               </div>
             </div>
@@ -2729,6 +2755,7 @@ export default function App() {
   const [checkoutPromoCode, setCheckoutPromoCode] = useState('');
   const [appliedPromo, setAppliedPromo] = useState(null);
   const [newProdVideoType, setNewProdVideoType] = useState('youtube');
+  const [uploadingProductVideo, setUploadingProductVideo] = useState(false);
   const [newProdAttributes, setNewProdAttributes] = useState({});
   const [newAttrKey, setNewAttrKey] = useState('');
   const [newAttrValues, setNewAttrValues] = useState('');
@@ -3690,10 +3717,46 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  const handleProductVideoUpload = async (event) => {
+    const file = event.target.files?.[0];
+    const input = event.currentTarget;
+    if (!file) return;
+    const supportedVideoTypes = ['video/mp4', 'video/webm', 'video/quicktime', 'video/ogg'];
+    if (!supportedVideoTypes.includes(file.type)) {
+      showToast('Choose an MP4, WebM, MOV, or OGG video.', 'error');
+      input.value = '';
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      showToast('Video size must be 50 MB or less.', 'error');
+      input.value = '';
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('video', file);
+    setUploadingProductVideo(true);
+    try {
+      const token = sessionStorage.getItem('velqra_token');
+      const { data } = await axios.post(`${API_URL}/admin/products/upload-video`, formData, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!data.success || !data.videoUrl) throw new Error('Video upload did not return a video URL.');
+      setNewProdVideoUrl(data.videoUrl);
+      setNewProdVideoType('uploaded');
+      showToast('✅ Product demo video uploaded.', 'success');
+    } catch (err) {
+      showToast(err.response?.data?.message || err.message || 'Video upload failed.', 'error');
+    } finally {
+      setUploadingProductVideo(false);
+      input.value = '';
+    }
+  };
+
   const handleAddProduct = async (e) => {
     e.preventDefault();
-    if (!newProdName || !newProdOriginalPrice || !newProdImageUrl) {
-      showToast('Name, Price and Image URL are required!', 'error');
+    if (!newProdName || !newProdOriginalPrice || (!newProdImageUrl && !newProdVideoUrl)) {
+      showToast('Name, price, and an image or video are required.', 'error');
       return;
     }
     const promoCode = newProdPromoCode.trim().toUpperCase();
@@ -3716,7 +3779,9 @@ export default function App() {
       weight: newProdWeight || null,
       warranty: newProdWarranty || '',
       imageUrl: newProdImageUrl.trim(),
-      images: newProdImages ? newProdImages.split(',').map(img => img.trim()) : [newProdImageUrl.trim()],
+      images: newProdImages
+        ? newProdImages.split(',').map(img => img.trim()).filter(Boolean)
+        : newProdImageUrl.trim() ? [newProdImageUrl.trim()] : [],
       videoUrl: newProdVideoUrl.trim() || '',
       videoType: newProdVideoType || 'youtube',
       attributes: newProdAttributes,
@@ -4467,7 +4532,20 @@ export default function App() {
                               <Link key={product._id} to={`/product/${product._id}`} className="velqra-product-grid-card group">
                                 <div className="relative">
                                   {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
-                                  <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
+                                  {product.videoType === 'uploaded' && product.videoUrl ? (
+                                    <video
+                                      src={product.videoUrl}
+                                      autoPlay
+                                      muted
+                                      loop
+                                      playsInline
+                                      preload="metadata"
+                                      aria-label={`${product.name} demo video`}
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : (
+                                    <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
+                                  )}
                                 </div>
                                 <div className="p-3 sm:p-5">
                                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8a8a82]">{product.category || 'Botanical'}</p>
@@ -4690,7 +4768,7 @@ export default function App() {
                           }}
                           placeholder="https://example.com/product-image.jpg"
                           className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
-                          required={!newProdImageFile}
+                          required={!newProdImageFile && !newProdVideoUrl}
                         />
                         <div className="flex items-center gap-2 my-2 text-[10px] text-slate-400">
                           <span className="h-px flex-1 bg-slate-200" />
@@ -4742,17 +4820,36 @@ export default function App() {
                         />
                       </div>
 
-                      {/* Video URL */}
+                      {/* Video URL or uploaded demo */}
                       <div>
-                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Video URL (YouTube/Vimeo)</label>
+                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Product demo video</label>
+                        <input
+                          type="file"
+                          accept="video/mp4,video/webm,video/quicktime,video/ogg"
+                          onChange={handleProductVideoUpload}
+                          disabled={uploadingProductVideo}
+                          className="w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-[#0B3C5D] file:px-3 file:py-2 file:text-xs file:font-bold file:text-white disabled:opacity-50"
+                        />
+                        <p className="mt-1 text-[10px] text-slate-400">Upload MP4, WebM, MOV, or OGG (max 50 MB); the video appears in the product media gallery.</p>
+                        <div className="my-3 flex items-center gap-2 text-[10px] text-slate-400">
+                          <span className="h-px flex-1 bg-slate-200" />
+                          OR ADD A LINK
+                          <span className="h-px flex-1 bg-slate-200" />
+                        </div>
                         <input
                           type="url"
                           value={newProdVideoUrl}
-                          onChange={(e) => setNewProdVideoUrl(e.target.value)}
+                          onChange={(e) => {
+                            setNewProdVideoUrl(e.target.value);
+                            if (newProdVideoType === 'uploaded') setNewProdVideoType('youtube');
+                          }}
                           placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
                           className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
                         />
-                        {newProdVideoUrl && (
+                        {newProdVideoUrl && newProdVideoType === 'uploaded' && (
+                          <video src={newProdVideoUrl} controls playsInline preload="metadata" className="mt-2 max-h-48 w-full rounded-lg bg-black" />
+                        )}
+                        {newProdVideoUrl && newProdVideoType !== 'uploaded' && (
                           <div className="mt-2 text-[10px] text-green-600">
                             ✅ Video URL added: {newProdVideoUrl}
                           </div>
@@ -4760,7 +4857,7 @@ export default function App() {
                       </div>
 
                       {/* Video Platform */}
-                      <div>
+                      {newProdVideoType !== 'uploaded' && <div>
                         <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Video Platform</label>
                         <select
                           value={newProdVideoType}
@@ -4770,7 +4867,7 @@ export default function App() {
                           <option value="youtube">YouTube</option>
                           <option value="vimeo">Vimeo</option>
                         </select>
-                      </div>
+                      </div>}
 
                       {/* Description */}
                       <div>
@@ -4786,10 +4883,10 @@ export default function App() {
 
                       <button
                         type="submit"
-                        disabled={loading}
+                        disabled={loading || uploadingProductVideo}
                         className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider hover:bg-[#07263b] transition disabled:opacity-50"
                       >
-                        {loading ? '⏳ Processing...' : '🚀 Add Product'}
+                        {uploadingProductVideo ? '⏳ Uploading video...' : loading ? '⏳ Processing...' : '🚀 Add Product'}
                       </button>
                     </form>
                   </div>
