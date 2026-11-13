@@ -25,6 +25,12 @@ const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(
 const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || `${backendUrl}/api/payment/payu/callback`;
 const payuFailureUrl = process.env.PAYU_FAILURE_URL || `${backendUrl}/api/payment/payu/callback`;
 const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:10000').replace(/\/+$/, '');
+const metaPixelId = process.env.META_PIXEL_ID || '';
+const metaAccessToken = process.env.META_ACCESS_TOKEN || '';
+const metaGraphApiVersion = process.env.META_GRAPH_API_VERSION || 'v22.0';
+const metaTestEventCode = process.env.META_TEST_EVENT_CODE || '';
+const metaCapiConfigured = /^\d+$/.test(metaPixelId) &&
+  Boolean(metaAccessToken) && /^v\d+\.\d+$/.test(metaGraphApiVersion);
 const parseConfiguredUrl = (name, value) => {
   try {
     return new URL(value);
@@ -163,6 +169,7 @@ console.log(`🧪 SMS Test Mode: ${smsTestMode ? 'ON' : 'OFF'}`);
 console.log(`📱 SMS Whitelist entries: ${smsTestNumbers.length}`);
 console.log(`✉️ Email OTP: ${resend ? 'Resend configured' : emailTestMode ? 'Local test mode' : 'Not configured'}`);
 console.log(`💳 PayU: ${payuKey ? '✅' : '❌'}`);
+console.log(`📊 Meta Conversions API: ${metaCapiConfigured ? 'configured' : 'not configured'}`);
 
 if (!supabaseUrl || !supabaseSecretKey) {
   console.error('❌ Supabase credentials missing');
@@ -587,9 +594,9 @@ const formatCart = (cart) => {
   return { items, totalItems, totalPrice, totalSavings, updatedAt: cart.updated_at || new Date().toISOString() };
 };
 
-const formatOrder = (order) => {
+const formatOrder = (order, includeAttribution = false) => {
   if (!order) return null;
-  return {
+  const formattedOrder = {
     _id: order.id, id: order.id, userId: order.user_id,
     userName: order.user_name || 'Guest', userEmail: order.user_email || '',
     items: order.items || [], total: order.total,
@@ -598,6 +605,124 @@ const formatOrder = (order) => {
     status: order.status || 'Pending', statusHistory: order.status_history || [],
     createdAt: order.created_at, updatedAt: order.updated_at
   };
+  if (includeAttribution) {
+    const firstTouch = sanitizeAttributionTouch(order.attribution?.firstTouch);
+    const lastTouch = sanitizeAttributionTouch(order.attribution?.lastTouch);
+    formattedOrder.attribution = {
+      ...(firstTouch ? { firstTouch } : {}),
+      ...(lastTouch ? { lastTouch } : {})
+    };
+  }
+  return formattedOrder;
+};
+
+const sanitizeAttributionTouch = (touch) => {
+  if (!touch || typeof touch !== 'object' || Array.isArray(touch)) return null;
+  const allowedFields = ['source', 'medium', 'campaign', 'term', 'content', 'campaignId'];
+  const sanitized = {};
+  for (const field of allowedFields) {
+    if (typeof touch[field] !== 'string') continue;
+    const value = touch[field].replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 256);
+    if (value) sanitized[field] = value;
+  }
+  if (typeof touch.landingPath === 'string') {
+    const landingPath = touch.landingPath.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 512);
+    if (landingPath.startsWith('/') && !landingPath.startsWith('//')) {
+      sanitized.landingPath = landingPath;
+    }
+  }
+  if (typeof touch.capturedAt === 'string' && Number.isFinite(Date.parse(touch.capturedAt))) {
+    sanitized.capturedAt = new Date(touch.capturedAt).toISOString();
+  }
+  return Object.keys(sanitized).length ? sanitized : null;
+};
+
+const sanitizeOrderAttribution = (attribution) => {
+  if (!attribution || typeof attribution !== 'object' || Array.isArray(attribution)) return {};
+  const sanitized = {};
+  const firstTouch = sanitizeAttributionTouch(attribution.firstTouch);
+  const lastTouch = sanitizeAttributionTouch(attribution.lastTouch);
+  if (firstTouch) sanitized.firstTouch = firstTouch;
+  if (lastTouch) sanitized.lastTouch = lastTouch;
+
+  const fbp = String(attribution.fbp || '').trim().slice(0, 256);
+  const fbc = String(attribution.fbc || '').trim().slice(0, 512);
+  if (/^fb\.\d+\.\d+\.\d+$/.test(fbp)) sanitized.fbp = fbp;
+  if (/^fb\.\d+\.\d+\.[A-Za-z0-9._-]{1,256}$/.test(fbc)) sanitized.fbc = fbc;
+  return sanitized;
+};
+
+const hashMetaValue = value => crypto.createHash('sha256').update(value).digest('hex');
+const sendMetaPurchaseEvent = async (order) => {
+  if (!metaCapiConfigured || !order?.marketing_consent) return;
+  try {
+    const delivery = order.delivery || {};
+    const email = String(order.user_email || delivery.email || '').trim().toLowerCase();
+    const phoneDigits = String(delivery.phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    const userData = {};
+    if (email) userData.em = [hashMetaValue(email)];
+    if (/^[6-9]\d{9}$/.test(phoneDigits)) userData.ph = [hashMetaValue(`91${phoneDigits}`)];
+    if (order.user_id) userData.external_id = [hashMetaValue(String(order.user_id))];
+
+    const attribution = sanitizeOrderAttribution(order.attribution);
+    if (attribution.fbp) userData.fbp = attribution.fbp;
+    if (attribution.fbc) userData.fbc = attribution.fbc;
+
+    const eventUrl = new URL(frontendUrl);
+    const touch = attribution.lastTouch || attribution.firstTouch || {};
+    eventUrl.pathname = touch.landingPath || '/';
+    const utmParameters = {
+      source: 'utm_source',
+      medium: 'utm_medium',
+      campaign: 'utm_campaign',
+      term: 'utm_term',
+      content: 'utm_content',
+      campaignId: 'utm_id'
+    };
+    for (const [field, parameter] of Object.entries(utmParameters)) {
+      if (touch[field]) eventUrl.searchParams.set(parameter, touch[field]);
+    }
+
+    const items = Array.isArray(order.items) ? order.items : [];
+    const event = {
+      event_name: 'Purchase',
+      event_time: Math.floor(Date.now() / 1000),
+      event_id: String(order.id),
+      action_source: 'website',
+      event_source_url: eventUrl.toString(),
+      user_data: userData,
+      custom_data: {
+        currency: 'INR',
+        value: Number(order.total),
+        order_id: String(order.id),
+        content_type: 'product',
+        content_ids: items.map(item => String(item.product_id)).filter(Boolean),
+        contents: items.map(item => ({
+          id: String(item.product_id),
+          quantity: Number(item.qty),
+          item_price: Number(item.price)
+        }))
+      }
+    };
+    const payload = { data: [event] };
+    if (metaTestEventCode) payload.test_event_code = metaTestEventCode;
+    const response = await axios.post(
+      `https://graph.facebook.com/${metaGraphApiVersion}/${metaPixelId}/events`,
+      payload,
+      {
+        timeout: 5000,
+        headers: { Authorization: `Bearer ${metaAccessToken}` }
+      }
+    );
+    if (!response.data || response.data.events_received !== 1) {
+      console.error('Meta Conversions API did not accept the Purchase event');
+    }
+  } catch (error) {
+    console.error('Meta Purchase event delivery failed:', {
+      status: error.response?.status,
+      code: error.code
+    });
+  }
 };
 
 const calculateDeliveryCharge = (subtotal) => subtotal >= 199 ? 0 : 20;
@@ -2082,6 +2207,8 @@ app.post('/api/payment/payu/callback', async (req, res) => {
         return res.redirect(`${frontendUrl}/orders?payment=${alreadyPaid ? 'success' : 'failure'}&txnid=${encodeURIComponent(txnid)}`);
       }
 
+      void sendMetaPurchaseEvent(order);
+
       try {
         for (const item of (order?.items || [])) {
           if (item.product_id) {
@@ -2141,7 +2268,10 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   try {
     console.log('📦 Creating order...');
 
-    const { items, total, paymentMethod, delivery, orderConfirmToken } = req.body;
+    const {
+      items, total, paymentMethod, delivery, orderConfirmToken,
+      attribution, marketingConsent
+    } = req.body;
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).json({ success: false, message: 'Login required' });
     const decodedUser = jwt.verify(authHeader.split(' ')[1], jwtSecret);
@@ -2277,6 +2407,8 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       user_id: userId, user_name: user.name || 'User', user_email: user.email || '',
       items: orderItems, total: calculatedTotal,
       payment_method: paymentMethod || 'cod',
+      attribution: sanitizeOrderAttribution(attribution),
+      marketing_consent: marketingConsent === true,
       reference_id: null,
       delivery: {
         fullName: String(delivery.fullName || '').trim(),
@@ -2310,6 +2442,7 @@ app.post('/api/orders', requireAuth, async (req, res) => {
     }
 
     console.log(`✅ Order placed: ${order.id}`);
+    if (paymentMethod === 'cod') void sendMetaPurchaseEvent(order);
     res.status(201).json({ success: true, message: 'Order placed', order: formatOrder(order) });
   } catch (error) {
     console.error('❌ Error creating order:', error);
@@ -2569,6 +2702,7 @@ app.patch('/api/orders/:id/verify-payment', requireAdmin, async (req, res) => {
       status: 'Payment Verified', status_history: history, updated_at: new Date().toISOString()
     }).eq('id', req.params.id).select().single();
 
+    if (order.payment_method === 'online') void sendMetaPurchaseEvent(updated);
     res.json({ success: true, message: 'Payment verified', order: formatOrder(updated) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error' });
@@ -2593,7 +2727,8 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
-    const { data: order } = await supabase.from('orders').select('status_history').eq('id', req.params.id).single();
+    const { data: order } = await supabase.from('orders')
+      .select('status_history, status, payment_method').eq('id', req.params.id).single();
     if (!order) return res.status(404).json({ success: false, message: 'Not found' });
 
     const history = order.status_history || [];
@@ -2602,6 +2737,12 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
     const { data: updated } = await supabase.from('orders').update({
       status, status_history: history, updated_at: new Date().toISOString()
     }).eq('id', req.params.id).select().single();
+
+    if (order.payment_method === 'online' &&
+        order.status === 'Payment Verification Pending' &&
+        ['Payment Verified', 'Confirmed', 'Shipped', 'Delivered'].includes(status)) {
+      void sendMetaPurchaseEvent(updated);
+    }
 
     res.json({
       success: true, message: 'Status updated',
@@ -2681,7 +2822,7 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
     }
 
     res.json({
-      success: true, orders: orders.map(formatOrder),
+      success: true, orders: orders.map(order => formatOrder(order, true)),
       pagination: {
         page: parseInt(page), limit: parseInt(limit),
         total: count || orders.length, pages: Math.ceil((count || orders.length) / limit)

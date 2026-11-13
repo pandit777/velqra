@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import { downloadOrderInvoice } from './services/api';
+import { captureTrafficAttribution, getTrafficAttribution } from './lib/trafficAttribution';
 import {
   CURRENCY_OPTIONS,
   LANGUAGE_OPTIONS,
@@ -2472,10 +2473,15 @@ export default function App() {
   const [cartLoading, setCartLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [placingOrder, setPlacingOrder] = useState(false);
+  const [marketingConsent, setMarketingConsent] = useState(false);
   const [error, setError] = useState('');
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
   const [activeBanner, setActiveBanner] = useState(0);
   const banners = [banner1, banner2, banner3];
+
+  useEffect(() => {
+    captureTrafficAttribution(location.search, location.pathname);
+  }, [location.pathname, location.search]);
 
   useEffect(() => {
     localStorage.setItem('velqra_language', language);
@@ -2818,6 +2824,7 @@ export default function App() {
   const resetCheckout = () => {
     setCheckoutOpen(false);
     setPaymentMethod('cod');
+    setMarketingConsent(false);
     setDeliveryForm({
       fullName: currentUser?.name || '',
       phone: getRegisteredPhone(currentUser),
@@ -2961,6 +2968,8 @@ export default function App() {
       })),
       total: finalTotal,
       paymentMethod: paymentMethod,
+      attribution: getTrafficAttribution(marketingConsent),
+      marketingConsent,
       status: orderStatus,
       delivery: {
         fullName: deliveryForm.fullName,
@@ -5577,6 +5586,18 @@ export default function App() {
                         </div>
                       )}
                     </div>
+
+                    <label className="flex items-start gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={marketingConsent}
+                        onChange={(e) => setMarketingConsent(e.target.checked)}
+                        className="mt-0.5 accent-[#0B3C5D]"
+                      />
+                      <span>
+                        {t('I agree to share my contact details and order data with Meta for advertising measurement. This is optional and does not affect checkout.')}
+                      </span>
+                    </label>
 
                     <div className="flex flex-col gap-2">
                                             <button

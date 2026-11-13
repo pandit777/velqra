@@ -40,6 +40,14 @@ services:
         sync: false
       - key: PAYU_SALT
         sync: false
+      - key: META_PIXEL_ID
+        sync: false
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_GRAPH_API_VERSION
+        value: v22.0
+      - key: META_TEST_EVENT_CODE
+        sync: false
   - type: web
     name: atelimarket-frontend
     runtime: static
