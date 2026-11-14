@@ -342,7 +342,9 @@ const allowedOrigins = [
     if (!origin) return false;
     try {
       const parsed = new URL(origin);
-      return process.env.NODE_ENV !== 'production' || parsed.protocol === 'https:';
+      return process.env.NODE_ENV !== 'production' ||
+        parsed.protocol === 'https:' ||
+        parsed.origin === 'http://localhost:10000';
     } catch {
       return false;
     }

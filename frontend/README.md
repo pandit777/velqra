@@ -54,6 +54,7 @@ The frontend defaults to the local API at `http://localhost:5000/api`. Set `VITE
 ## Deployment
 
 - Render uses `backend/render.yaml` for both the API and static frontend. The frontend rewrite serves `index.html` for client-side routes such as `/product/:id`, so direct navigation and refresh work. Provide the values marked `sync: false` in the Render dashboard, including Supabase, JWT, Resend, sender email, Fast2SMS, and PayU settings; do not commit credentials.
+- To test the local frontend against the hosted API, temporarily add `http://localhost:10000` to the backend's `ALLOWED_ORIGINS` setting in Render. Remove it after testing.
 - Deploy `frontend` as the Vercel project root. Vercel builds to `dist` and rewrites client-side routes to `index.html`.
 - Set the Vercel build-time variable `VITE_API_URL` to the deployed backend's `/api` URL if it differs from the configured default.
 - Run `supabase/schema.sql` in the Supabase SQL Editor to create the app's tables, indexes, and policies. It is safe to run on an existing database; existing rows are preserved.
