@@ -19,11 +19,15 @@ dotenv.config();
 // =============================================
 const payuKey = process.env.PAYU_MERCHANT_KEY;
 const payuSalt = process.env.PAYU_SALT;
-const payuBaseUrl = process.env.PAYU_BASE_URL || 'https://secure.payu.in/_payment';
+const payuBaseUrl = process.env.PAYU_BASE_URL ||
+  (process.env.NODE_ENV === 'production'
+    ? 'https://secure.payu.in/_payment'
+    : 'https://test.payu.in/_payment');
 const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/+$/, '');
-const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || `${backendUrl}/api/payment/payu/callback`;
-const payuFailureUrl = process.env.PAYU_FAILURE_URL || `${backendUrl}/api/payment/payu/callback`;
 const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:10000').replace(/\/+$/, '');
+const payuCallbackUrl = `${frontendUrl}/api/payment/payu/callback`;
+const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || payuCallbackUrl;
+const payuFailureUrl = process.env.PAYU_FAILURE_URL || payuCallbackUrl;
 const metaPixelId = process.env.META_PIXEL_ID || '';
 const metaAccessToken = process.env.META_ACCESS_TOKEN || '';
 const metaGraphApiVersion = process.env.META_GRAPH_API_VERSION || 'v22.0';
@@ -55,7 +59,7 @@ if (process.env.NODE_ENV === 'production') {
   }
   for (const [name, url] of callbackUrls) {
     if (url.protocol !== 'https:') errors.push(`${name} must use HTTPS`);
-    if (url.origin !== parsedBackendUrl.origin) errors.push(`${name} must use the BACKEND_URL origin`);
+    if (url.origin !== frontendOrigin) errors.push(`${name} must use the FRONTEND_URL origin`);
     if (url.pathname !== '/api/payment/payu/callback' || url.search || url.hash) {
       errors.push(`${name} must be /api/payment/payu/callback without query or fragment`);
     }
@@ -797,6 +801,7 @@ const formatReturnRequest = (r) => {
     id: r.id,
     orderId: r.order_id,
     userId: r.user_id,
+    transactionId: r.payment_transaction_id || null,
     items: r.items || [],
     reason: r.reason,
     description: r.description || '',
@@ -1661,7 +1666,7 @@ app.get('/api/products/:id/reviews', async (req, res) => {
 
     const formatted = (reviews || []).map(r => ({
       ...r,
-      videoUrl: r.video_url ? `${req.protocol}://${req.get('host')}${r.video_url}` : null
+      videoUrl: r.video_url || null
     }));
 
     res.json({ success: true, reviews: formatted, total: formatted.length });
@@ -2433,7 +2438,7 @@ const handlePayuCallback = async (req, res) => {
 
   } catch (err) {
     console.error('PayU callback processing failed:', err.message);
-    res.redirect(`${frontendUrl}/orders?payment=failure&reason=server_error`);
+    res.redirect(`${frontendUrl}/orders?payment=pending&reason=verification_unavailable`);
   }
 };
 app.post('/api/payment/payu/callback', handlePayuCallback);
@@ -2645,8 +2650,32 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const { data: orders, error } = await query;
     if (error) return res.status(500).json({ success: false, message: 'Error' });
 
-    const visibleOrders = (orders || []).filter(order => !isAdmin || isOnlinePaymentVerified(order));
-    res.json({ success: true, orders: visibleOrders.map(formatOrder) });
+    const visibleOrders = orders || [];
+    const orderIds = visibleOrders.map(order => order.id);
+    const { data: returnRequests, error: returnError } = orderIds.length
+      ? await supabase.from('return_requests')
+        .select('id, order_id, status, refund_amount, payment_transaction_id, created_at, updated_at')
+        .in('order_id', orderIds)
+      : { data: [], error: null };
+    if (returnError) throw returnError;
+    const returnByOrderId = new Map((returnRequests || []).map(returnRequest => [
+      returnRequest.order_id,
+      {
+        id: returnRequest.id,
+        status: returnRequest.status,
+        refundAmount: returnRequest.refund_amount,
+        transactionId: returnRequest.payment_transaction_id || null,
+        createdAt: returnRequest.created_at,
+        updatedAt: returnRequest.updated_at
+      }
+    ]));
+    res.json({
+      success: true,
+      orders: visibleOrders.map(order => ({
+        ...formatOrder(order),
+        returnRequest: returnByOrderId.get(order.id) || null
+      }))
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error' });
   }
@@ -2999,20 +3028,20 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
     const { data: fetchedOrders, error } = await query.order('created_at', { ascending: false });
     if (error) return res.status(500).json({ success: false, message: 'Error' });
 
-    const visibleOrders = (fetchedOrders || []).filter(isOnlinePaymentVerified);
+    const visibleOrders = fetchedOrders || [];
     const parsedPage = Math.max(1, Number.parseInt(page, 10) || 1);
     const parsedLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 10));
     const skip = (parsedPage - 1) * parsedLimit;
     const orders = visibleOrders.slice(skip, skip + parsedLimit);
 
-    const { data: statusCounts, error: countsError } = await supabase.from('orders').select('status, payment_method, status_history');
+    const { data: statusCounts, error: countsError } = await supabase.from('orders').select('status');
     if (countsError) return res.status(500).json({ success: false, message: 'Unable to load order counts' });
     const counts = {
       all: 0, Pending: 0, 'Payment Verification Pending': 0,
       'Payment Verified': 0, 'Payment Failed': 0, Confirmed: 0, Shipped: 0, Delivered: 0, Cancelled: 0
     };
     if (statusCounts) {
-      statusCounts.filter(isOnlinePaymentVerified).forEach(item => {
+      statusCounts.forEach(item => {
         counts.all++;
         if (Object.prototype.hasOwnProperty.call(counts, item.status)) counts[item.status]++;
       });
@@ -3032,7 +3061,7 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
 });
 
 // =============================================
-// RETURN REQUESTS — COD only, OTP + Bank details
+// RETURN REQUESTS — OTP for COD, original PayU transaction for online payments
 // =============================================
 app.post('/api/returns/send-otp', requireAuth, otpRequestRateLimit, otpTargetRequestRateLimit, noStore, async (req, res) => {
   try {
@@ -3173,26 +3202,16 @@ app.post('/api/returns/verify-otp', requireAuth, otpVerifyRateLimit, otpTargetVe
 
 app.post('/api/returns', requireAuth, async (req, res) => {
   try {
-    const { orderId, items, reason, description, returnToken } = req.body;
+    const { orderId, items, reason, description, returnToken, transactionId } = req.body;
 
-    if (!orderId || !returnToken) {
-      return res.status(400).json({ success: false, message: 'orderId and returnToken required' });
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId required' });
     }
     if (!reason || !RETURN_REASONS.includes(reason)) {
       return res.status(400).json({ success: false, message: 'Valid return reason required' });
     }
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Select at least one item to return' });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(returnToken, jwtSecret);
-    } catch {
-      return res.status(401).json({ success: false, message: 'Return verification expired. Please verify OTP again.' });
-    }
-    if (decoded.purpose !== 'return-request' || decoded.userId !== req.userId || decoded.orderId !== orderId) {
-      return res.status(401).json({ success: false, message: 'Invalid return token' });
     }
 
     const { data: order } = await supabase
@@ -3208,8 +3227,36 @@ app.post('/api/returns', requireAuth, async (req, res) => {
     if (order.status !== 'Delivered') {
       return res.status(400).json({ success: false, message: 'Only delivered orders can be returned' });
     }
-    if ((order.payment_method || 'cod') !== 'cod') {
-      return res.status(400).json({ success: false, message: 'Return flow is for COD orders only' });
+    const isOnlineOrder = order.payment_method === 'online';
+    if (isOnlineOrder) {
+      const suppliedTransactionId = String(transactionId || '').trim();
+      if (!suppliedTransactionId || suppliedTransactionId !== order.reference_id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Enter the transaction ID shown for this order'
+        });
+      }
+      if (!isOnlinePaymentVerified(order)) {
+        return res.status(409).json({ success: false, message: 'This online payment is not verified yet' });
+      }
+      const verification = await verifyPayuTransaction(suppliedTransactionId);
+      if (!verification.captured ||
+          verification.amount.toFixed(2) !== Number(order.total).toFixed(2)) {
+        return res.status(409).json({
+          success: false,
+          message: 'PayU could not verify the transaction for this order'
+        });
+      }
+    } else {
+      let decoded;
+      try {
+        decoded = jwt.verify(returnToken, jwtSecret);
+      } catch {
+        return res.status(401).json({ success: false, message: 'Return verification expired. Please verify OTP again.' });
+      }
+      if (decoded.purpose !== 'return-request' || decoded.userId !== req.userId || decoded.orderId !== orderId) {
+        return res.status(401).json({ success: false, message: 'Invalid return token' });
+      }
     }
 
     const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
@@ -3231,54 +3278,65 @@ app.post('/api/returns', requireAuth, async (req, res) => {
       });
     }
 
-    const { data: bank } = await supabase
-      .from('bank_details')
-      .select('*')
-      .eq('user_id', req.userId)
-      .maybeSingle();
-
-    if (!bank) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please add your bank details before requesting a return',
-        requiresBankDetails: true
-      });
+    let bank = null;
+    if (!isOnlineOrder) {
+      const { data, error: bankError } = await supabase
+        .from('bank_details')
+        .select('*')
+        .eq('user_id', req.userId)
+        .maybeSingle();
+      if (bankError) throw bankError;
+      bank = data;
+      if (!bank) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please add your bank details before requesting a COD return',
+          requiresBankDetails: true
+        });
+      }
     }
 
     const orderItems = Array.isArray(order.items) ? order.items : [];
     const returnItems = [];
+    const returnedQtyByProduct = new Map();
     let refundAmount = 0;
 
     for (const sel of items) {
       const pid = sel.productId || sel._id || sel.id;
-      const qty = Number(sel.qty) || 1;
+      const qty = Number(sel.qty);
       const match = orderItems.find(i => (i.product_id || i._id || i.id) === pid);
       if (!match) {
         return res.status(400).json({ success: false, message: `Item ${pid} not in order` });
       }
-      if (qty < 1 || qty > (match.qty || 1)) {
+      const alreadySelected = returnedQtyByProduct.get(pid) || 0;
+      if (!Number.isSafeInteger(qty) || qty < 1 || alreadySelected + qty > (match.qty || 1)) {
         return res.status(400).json({
           success: false,
-          message: `Invalid qty for ${match.name}. Max: ${match.qty}`
+          message: `Invalid qty for ${match.name}. Max: ${Math.max(0, (match.qty || 1) - alreadySelected)}`
         });
       }
-      returnItems.push({
-        productId: match.product_id || match._id || match.id,
-        name: match.name,
-        price: Number(match.price) || 0,
-        qty,
-        image: match.image || match.imageUrl || ''
-      });
+      returnedQtyByProduct.set(pid, alreadySelected + qty);
+      const existingReturnItem = returnItems.find(item => item.productId === pid);
+      if (existingReturnItem) existingReturnItem.qty += qty;
+      else {
+        returnItems.push({
+          productId: match.product_id || match._id || match.id,
+          name: match.name,
+          price: Number(match.price) || 0,
+          qty,
+          image: match.image || match.imageUrl || ''
+        });
+      }
       refundAmount += (Number(match.price) || 0) * qty;
     }
 
-    const bankSnapshot = {
+    const bankSnapshot = bank ? {
       accountHolderName: bank.account_holder_name,
       accountNumber: bank.account_number,
       ifscCode: bank.ifsc_code,
       bankName: bank.bank_name,
       upiId: bank.upi_id || null
-    };
+    } : {};
 
     const now = new Date().toISOString();
     const { data: returnReq, error: insertErr } = await supabase
@@ -3290,6 +3348,7 @@ app.post('/api/returns', requireAuth, async (req, res) => {
         reason,
         description: description || '',
         bank_details_snapshot: bankSnapshot,
+        payment_transaction_id: isOnlineOrder ? order.reference_id : null,
         refund_amount: refundAmount,
         status: 'Pending',
         status_history: [{
@@ -3306,6 +3365,9 @@ app.post('/api/returns', requireAuth, async (req, res) => {
 
     if (insertErr) {
       console.error('Return insert error:', insertErr);
+      if (insertErr.code === '23505') {
+        return res.status(409).json({ success: false, message: 'A return request already exists for this order' });
+      }
       return res.status(500).json({ success: false, message: 'Failed to create return request' });
     }
 
@@ -3315,11 +3377,12 @@ app.post('/api/returns', requireAuth, async (req, res) => {
       updatedBy: 'Customer',
       details: `Return request ${returnReq.id} created. Refund ₹${refundAmount}`
     });
-    await supabase.from('orders').update({
+    const { error: orderUpdateError } = await supabase.from('orders').update({
       status: 'Return Requested',
       status_history: history,
       updated_at: now
     }).eq('id', orderId);
+    if (orderUpdateError) throw orderUpdateError;
 
     console.log(`↩️ Return requested: order ${orderId}, refund ₹${refundAmount}`);
 
@@ -3442,7 +3505,7 @@ app.get('/api/admin/returns', requireAdmin, async (req, res) => {
 app.patch('/api/admin/returns/:id/status', requireAdmin, async (req, res) => {
   try {
     const { status, adminNote } = req.body;
-    const valid = ['Pending', 'Approved', 'Rejected', 'Pickup Scheduled', 'Refund Initiated', 'Refunded', 'Cancelled'];
+    const valid = ['Pending', 'Approved', 'Rejected', 'Pickup Scheduled', 'Item Received', 'Refund Initiated', 'Refunded', 'Cancelled'];
     if (!valid.includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid return status' });
     }
@@ -3454,6 +3517,22 @@ app.patch('/api/admin/returns/:id/status', requireAdmin, async (req, res) => {
       .single();
 
     if (!ret) return res.status(404).json({ success: false, message: 'Not found' });
+    const allowedTransitions = {
+      Pending: ['Approved', 'Rejected', 'Cancelled'],
+      Approved: ['Pickup Scheduled', 'Item Received', 'Rejected', 'Cancelled'],
+      'Pickup Scheduled': ['Item Received', 'Cancelled'],
+      'Item Received': ['Refund Initiated', 'Rejected'],
+      'Refund Initiated': ['Refunded'],
+      Refunded: [],
+      Rejected: [],
+      Cancelled: []
+    };
+    if (!allowedTransitions[ret.status]?.includes(status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Cannot change return from ${ret.status} to ${status}`
+      });
+    }
 
     const now = new Date().toISOString();
     const history = Array.isArray(ret.status_history) ? [...ret.status_history] : [];
@@ -3470,6 +3549,7 @@ app.patch('/api/admin/returns/:id/status', requireAdmin, async (req, res) => {
       'Approved': 'Return Approved',
       'Rejected': 'Return Rejected',
       'Pickup Scheduled': 'Return Pickup Scheduled',
+      'Item Received': 'Return Item Received',
       'Refund Initiated': 'Return Refund Initiated',
       'Refunded': 'Return Refunded',
       'Cancelled': 'Delivered'  // cancel pe order wapas Delivered

@@ -2,13 +2,10 @@
 // API Service - Supabase Version
 // =============================================
 
-const API_URL = (
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD
-    ? 'https://velqra-aeap.onrender.com/api'
-    : 'http://localhost:5000/api')
-).replace(/\/+$/, '');
-const AUTH_URL = (import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`).replace(/\/+$/, '');
+const API_URL = import.meta.env.PROD
+  ? '/api'
+  : (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+const AUTH_URL = `${API_URL}/auth`;
 
 export async function downloadOrderInvoice(orderId) {
   const token = sessionStorage.getItem('velqra_user_token');

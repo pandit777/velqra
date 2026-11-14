@@ -21,14 +21,11 @@ import velqraLogo from './assets/velqra-logo.png';
 // =============================================
 // API URLs - SECURE (Environment Variables)
 // =============================================
-const API_URL = (
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD
-    ? 'https://velqra-aeap.onrender.com/api'
-    : 'http://localhost:5000/api')
-).replace(/\/$/, '');
-const BACKEND_ORIGIN = API_URL.replace(/\/api$/, '');
-const AUTH_URL = import.meta.env.VITE_AUTH_URL || `${API_URL}/auth`;
+const API_URL = import.meta.env.PROD
+  ? '/api'
+  : (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+const BACKEND_ORIGIN = import.meta.env.PROD ? '' : API_URL.replace(/\/api$/, '');
+const AUTH_URL = `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
 const EXCHANGE_RATES_CACHE_KEY = 'velqra_exchange_rates';
 const ADMIN_SETUP_CACHE_KEY = 'velqra_admin_setup_complete';
@@ -209,7 +206,7 @@ const TestModeBanner = ({ otp }) => (
 );
 
 // ═══════════════════════════════════════════════════
-// 🆕 RETURN REQUEST MODAL (COD — OTP + Bank + Form)
+// RETURN REQUEST MODAL (COD: OTP + bank; online: PayU transaction + form)
 // ═══════════════════════════════════════════════════
 const RETURN_REASONS = [
   'Damaged product',
@@ -223,10 +220,11 @@ const RETURN_REASONS = [
 
 const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
   const { formatCurrency } = useLocalization();
-  const [step, setStep] = useState('otp'); // otp → otp-verify → bank → form → done
+  const [step, setStep] = useState('otp');
   const [otp, setOtp] = useState('');
   const [devOtp, setDevOtp] = useState('');
   const [returnToken, setReturnToken] = useState('');
+  const [transactionId, setTransactionId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [timer, setTimer] = useState(0);
@@ -259,10 +257,11 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
 
   useEffect(() => {
   if (isOpen) {
-    setStep('otp');
+    setStep(order?.paymentMethod === 'online' ? 'form' : 'otp');
     setOtp('');
     setDevOtp('');
     setReturnToken('');
+    setTransactionId('');
     setError('');
     setSelectedItems({});
     setReason('');
@@ -272,7 +271,7 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
     setTimer(0);
     // ❌ Auto-send hata diya — user khud "Send OTP" dabayega
   }
-}, [isOpen]);
+}, [isOpen, order?.paymentMethod]);
 
   const startTimer = () => {
     setTimer(60);
@@ -379,12 +378,16 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
 
   // ========== STEP 4: Submit Return ==========
   const submitReturn = async () => {
+    const isOnlineOrder = order.paymentMethod === 'online';
     const items = Object.entries(selectedItems)
       .filter(([, qty]) => qty > 0)
       .map(([productId, qty]) => ({ productId, qty }));
 
     if (items.length === 0) return setSubmitError('Select at least one item');
     if (!reason) return setSubmitError('Select a reason');
+    if (isOnlineOrder && !transactionId.trim()) {
+      return setSubmitError('Enter the PayU transaction ID for this order');
+    }
 
     setSubmitting(true);
     setSubmitError('');
@@ -396,7 +399,7 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
           items,
           reason,
           description,
-          returnToken
+          ...(isOnlineOrder ? { transactionId: transactionId.trim() } : { returnToken })
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -578,6 +581,28 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
               Select items and reason for return.
             </p>
 
+            {order.paymentMethod === 'online' && (
+              <div className="mb-4">
+                <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
+                  PayU Transaction ID *
+                </label>
+                <p className="mb-2 text-[10px] text-slate-500">
+                  Enter the transaction ID for this order. The refund, if approved, goes to the original payment method; no bank details are needed.
+                </p>
+                <p className="mb-2 break-all rounded-lg bg-slate-50 p-2 font-mono text-[10px] text-slate-600">
+                  Order transaction ID: {order.referenceId || 'Unavailable'}
+                </p>
+                <input
+                  type="text"
+                  value={transactionId}
+                  onChange={(e) => setTransactionId(e.target.value.trim())}
+                  placeholder="Enter PayU transaction ID"
+                  maxLength={64}
+                  className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D]"
+                />
+              </div>
+            )}
+
             {/* Item select */}
             <div className="mb-4">
               <label className="block text-[10px] font-bold uppercase text-slate-400 mb-2">
@@ -661,7 +686,9 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
                 <span className="font-bold">Estimated Refund:</span> {formatCurrency(refundAmount)}
               </div>
               <div className="text-[10px] text-slate-500 mt-1">
-                Approve hone ke baad aapke bank account mein aayega
+                {order.paymentMethod === 'online'
+                  ? 'Refund original payment method par item receive aur inspect hone ke baad process hoga. Bank/PayU timing vary kar sakti hai.'
+                  : 'Refund return approval ke baad aapke diye gaye account mein process hoga.'}
               </div>
             </div>
 
@@ -687,7 +714,7 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
             <div className="text-5xl mb-4">✅</div>
             <h3 className="text-lg font-black text-[#0B3C5D] mb-2">Return Submitted!</h3>
             <p className="text-xs text-slate-500 mb-4">
-              Aapki return request admin ke paas bhej di gayi hai. Status update hone pe notify karenge.
+              Return request admin ko bhej di gayi hai. Item receive aur inspect hone ke baad refund process hoga; online refunds original payment method par aate hain aur processing time gateway/bank par depend karta hai.
             </p>
             <button
               onClick={onClose}
@@ -1946,6 +1973,7 @@ const OrdersPage = ({ onLoginRequest }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [invoiceLoadingId, setInvoiceLoadingId] = useState(null);
+  const [returnModalOrder, setReturnModalOrder] = useState(null);
 
   const fetchOrders = async () => {
     try {
@@ -2230,6 +2258,11 @@ const OrdersPage = ({ onLoginRequest }) => {
                         {t('Request Return')}
                       </button>
                     )}
+                    {order.returnRequest && (
+                      <span className="rounded-xl bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700">
+                        Return: {order.returnRequest.status}
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -2266,6 +2299,17 @@ const OrdersPage = ({ onLoginRequest }) => {
           })}
         </div>
       )}
+      <ReturnRequestModal
+        isOpen={Boolean(returnModalOrder)}
+        onClose={() => setReturnModalOrder(null)}
+        order={returnModalOrder}
+        onSuccess={(returnRequest) => {
+          setOrders(prev => prev.map(order => order._id === returnRequest.orderId
+            ? { ...order, returnRequest }
+            : order
+          ));
+        }}
+      />
     </div>
   );
 };
@@ -2738,6 +2782,10 @@ export default function App() {
   }, [checkoutOpen, currentUser?.role]);
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [returnRequests, setReturnRequests] = useState([]);
+  const [returnsLoading, setReturnsLoading] = useState(false);
+  const [verifyingPaymentId, setVerifyingPaymentId] = useState(null);
+  const [updatingReturnId, setUpdatingReturnId] = useState(null);
 
   // Product Management States
   const [newProdName, setNewProdName] = useState('');
@@ -3332,12 +3380,33 @@ export default function App() {
     }
   };
 
+  const fetchAdminReturns = async () => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (!token) return;
+
+    setReturnsLoading(true);
+    try {
+      const { data } = await axios.get(`${API_URL}/admin/returns`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (data.success) setReturnRequests(data.returns || []);
+    } catch (error) {
+      showToast(error.response?.data?.message || 'Unable to load return requests', 'error');
+    } finally {
+      setReturnsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isUserLoggedIn && !isAdminLoggedIn) return undefined;
     fetchOrders();
     if (!isAdminLoggedIn) return undefined;
+    fetchAdminReturns();
 
-    const refreshTimer = window.setInterval(fetchOrders, 30000);
+    const refreshTimer = window.setInterval(() => {
+      fetchOrders();
+      fetchAdminReturns();
+    }, 30000);
     return () => window.clearInterval(refreshTimer);
   }, [isUserLoggedIn, isAdminLoggedIn]);
 
@@ -3725,6 +3794,53 @@ export default function App() {
       }
     } catch (err) {
       showToast(err.response?.data?.message || 'Failed to update status', 'error');
+    }
+  };
+
+  const handleVerifyPayment = async (orderId) => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (!token) return showToast('Admin login required', 'error');
+
+    setVerifyingPaymentId(orderId);
+    try {
+      const { data } = await axios.patch(
+        `${API_URL}/orders/${orderId}/verify-payment`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!data.success) throw new Error(data.message || 'Payment verification failed');
+      setOrders(prev => prev.map(order => order._id === orderId ? data.order : order));
+      showToast('PayU payment verified successfully', 'success');
+    } catch (error) {
+      showToast(error.response?.data?.message || error.message || 'Unable to verify payment', 'error');
+    } finally {
+      setVerifyingPaymentId(null);
+    }
+  };
+
+  const handleReturnStatusChange = async (returnId, status) => {
+    if (status === 'Refunded' && !window.confirm(
+      'Mark refunded only after the actual refund is confirmed by the payment provider/bank. Continue?'
+    )) return;
+
+    const token = sessionStorage.getItem('velqra_user_token');
+    setUpdatingReturnId(returnId);
+    try {
+      const { data } = await axios.patch(
+        `${API_URL}/admin/returns/${returnId}/status`,
+        { status },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!data.success) throw new Error(data.message || 'Could not update return status');
+      setReturnRequests(prev => prev.map(returnRequest =>
+        returnRequest.id === returnId ? data.returnRequest : returnRequest
+      ));
+      fetchOrders();
+      showToast(`Return status updated: ${status}`, 'success');
+    } catch (error) {
+      showToast(error.response?.data?.message || error.message || 'Could not update return status', 'error');
+    } finally {
+      setUpdatingReturnId(null);
     }
   };
 
@@ -4940,7 +5056,12 @@ export default function App() {
                                     </div>
                                   </td>
                                   <td className="py-3 px-4">
-                                    <div className="text-slate-700">{order.paymentMethod === 'online' ? '📱 Online' : '💵 COD'}</div>
+                                    <div className="text-slate-700">{order.paymentMethod === 'online' ? '📱 Online · PayU' : '💵 COD'}</div>
+                                    {order.referenceId && (
+                                      <div className="mt-1 max-w-36 break-all text-[9px] text-slate-400">
+                                        Txn: {order.referenceId}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="py-3 px-4 font-bold text-[#0B3C5D]">₹{order.total}</td>
                                   <td className="py-3 px-4">
@@ -4959,6 +5080,17 @@ export default function App() {
                                   </td>
                                   <td className="py-3 px-4">
                                     <div className="flex flex-col gap-1">
+                                      {order.paymentMethod === 'online' &&
+                                        order.status === 'Payment Verification Pending' && order.referenceId && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleVerifyPayment(order._id)}
+                                            disabled={verifyingPaymentId === order._id}
+                                            className="rounded-lg bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                          >
+                                            {verifyingPaymentId === order._id ? 'Checking PayU...' : 'Verify with PayU'}
+                                          </button>
+                                        )}
                                       <select
                                         value={order.status}
                                         onChange={(e) => handleOrderStatusChange(order._id, e.target.value)}
@@ -4980,6 +5112,64 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                    </div>
+
+                    {/* Return Requests */}
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4">
+                        <h3 className="text-base font-extrabold text-slate-800">↩️ Return Requests</h3>
+                        <span className="text-[10px] font-bold uppercase text-slate-400">{returnRequests.length} total</span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse text-left">
+                          <thead>
+                            <tr className="border-b border-slate-100 bg-slate-50 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                              <th className="px-4 py-3">Order / Items</th>
+                              <th className="px-4 py-3">Payment transaction</th>
+                              <th className="px-4 py-3">Refund</th>
+                              <th className="px-4 py-3">Status</th>
+                              <th className="px-4 py-3">Update</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-xs font-medium">
+                            {returnsLoading ? (
+                              <tr><td colSpan="5" className="py-8 text-center text-slate-400">Loading return requests...</td></tr>
+                            ) : returnRequests.length === 0 ? (
+                              <tr><td colSpan="5" className="py-8 text-center text-slate-400">No return requests</td></tr>
+                            ) : returnRequests.map(returnRequest => (
+                              <tr key={returnRequest.id}>
+                                <td className="px-4 py-3">
+                                  <div className="font-bold text-slate-800">#{returnRequest.orderId?.slice(-8).toUpperCase()}</div>
+                                  <div className="mt-1 text-[10px] text-slate-500">
+                                    {(returnRequest.items || []).map(item => `${item.name} ×${item.qty}`).join(', ')}
+                                  </div>
+                                  <div className="mt-1 text-[10px] text-slate-400">{returnRequest.reason}</div>
+                                </td>
+                                <td className="max-w-48 break-all px-4 py-3 text-[10px] text-slate-600">
+                                  {returnRequest.transactionId || 'COD return'}
+                                </td>
+                                <td className="px-4 py-3 font-bold text-[#0B3C5D]">₹{returnRequest.refundAmount}</td>
+                                <td className="px-4 py-3">{returnRequest.status}</td>
+                                <td className="px-4 py-3">
+                                  <select
+                                    value={returnRequest.status}
+                                    onChange={(e) => handleReturnStatusChange(returnRequest.id, e.target.value)}
+                                    disabled={updatingReturnId === returnRequest.id}
+                                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold disabled:opacity-50"
+                                  >
+                                    {['Pending', 'Approved', 'Pickup Scheduled', 'Item Received', 'Refund Initiated', 'Refunded', 'Rejected', 'Cancelled'].map(status => (
+                                      <option key={status} value={status}>{status}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="border-t border-slate-100 px-4 py-3 text-[10px] text-slate-500">
+                        For online payments, refund to the original payment method only after the returned item is received and inspected. Gateway/bank timing varies; do not promise a 5–10 minute settlement.
+                      </p>
                     </div>
 
                     {/* Products Table */}

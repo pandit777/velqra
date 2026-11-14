@@ -183,6 +183,7 @@ create table if not exists public.return_requests (
   reason text not null,
   description text not null default '',
   bank_details_snapshot jsonb not null default '{}'::jsonb,
+  payment_transaction_id text,
   refund_amount numeric(12, 2) not null default 0 check (refund_amount >= 0),
   status text not null default 'Pending',
   status_history jsonb not null default '[]'::jsonb,
@@ -190,6 +191,9 @@ create table if not exists public.return_requests (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.return_requests
+  add column if not exists payment_transaction_id text;
 
 create index if not exists return_requests_user_created_at_idx
   on public.return_requests (user_id, created_at desc);
