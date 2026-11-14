@@ -25,7 +25,7 @@ const payuBaseUrl = process.env.PAYU_BASE_URL ||
     : 'https://test.payu.in/_payment');
 const backendUrl = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/+$/, '');
 const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:10000').replace(/\/+$/, '');
-const payuCallbackUrl = `${frontendUrl}/api/payment/payu/callback`;
+const payuCallbackUrl = `${backendUrl}/api/payment/payu/callback`;
 const payuSuccessUrl = process.env.PAYU_SUCCESS_URL || payuCallbackUrl;
 const payuFailureUrl = process.env.PAYU_FAILURE_URL || payuCallbackUrl;
 const metaPixelId = process.env.META_PIXEL_ID || '';
@@ -59,7 +59,6 @@ if (process.env.NODE_ENV === 'production') {
   }
   for (const [name, url] of callbackUrls) {
     if (url.protocol !== 'https:') errors.push(`${name} must use HTTPS`);
-    if (url.origin !== frontendOrigin) errors.push(`${name} must use the FRONTEND_URL origin`);
     if (url.pathname !== '/api/payment/payu/callback' || url.search || url.hash) {
       errors.push(`${name} must be /api/payment/payu/callback without query or fragment`);
     }
