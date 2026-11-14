@@ -24,10 +24,10 @@ npm ci
 npm run dev
 ```
 
-Copy `backend/.env.example` to `backend/.env` and set `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and a strong `JWT_SECRET`. Configure `RESEND_API_KEY` and a verified `EMAIL_FROM` sender for registration email codes, and configure a valid `FAST2SMS_API_KEY` for live mobile codes. SMS is live by default (`SMS_TEST_MODE=false`); set `SMS_TEST_MODE=true` only when intentionally skipping live SMS in development. `EMAIL_TEST_MODE=true` can keep email OTPs available in local development when Resend is not configured. Test codes are never returned when `NODE_ENV=production`.
+Copy `backend/.env.example` to `backend/.env` and set `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and a strong `JWT_SECRET`. Registration verification codes are sent only by SMS; configure a valid `FAST2SMS_API_KEY` for live mobile codes. With `SMS_TEST_MODE=true`, numbers listed in `SMS_TEST_NUMBERS` still use live Fast2SMS; other numbers receive a local test code. Set `SMS_TEST_MODE=false` to send live SMS to all valid numbers. Test codes are never returned when `NODE_ENV=production`.
 The backend creates the fixed `admin` login on first startup using `INITIAL_ADMIN_PASSWORD` from backend environment secrets (minimum 16 characters). The storefront stays locked and admin API operations are denied until that account changes its password (minimum 12 characters). For databases that still use the old bootstrap password, set `LEGACY_ADMIN_PASSWORD` for one startup to rotate it to `INITIAL_ADMIN_PASSWORD`, then remove the legacy variable. The optional `node admin-seed.js` helper uses `INITIAL_ADMIN_PASSWORD` and only creates a missing account.
 
-Login and registration open as dedicated pages. Registration requires a valid `@gmail.com` address and independently verified email and mobile codes. Accounts are created only after both codes are entered; passwords are hashed before pending registration data is stored.
+Login and registration open as dedicated pages. Registration requires a valid `@gmail.com` address and verifies ownership of the mobile number using one SMS code. The email address remains part of the account details but does not receive a verification code. Accounts are created after the SMS code is entered; passwords are hashed before pending registration data is stored.
 Forgot-password recovery sends a time-limited OTP to the registered mobile number; the verified reset session is also time-limited and can be used once.
 
 Delivered orders have a downloadable PDF delivery receipt in My Orders and Order Tracking. It is generated from the saved order details when requested; this receipt does not include GST/tax calculations.
@@ -43,6 +43,7 @@ The frontend defaults to the local API at `http://localhost:5000/api`. Set `VITE
 - Keep Supabase service-role, JWT, Fast2SMS, Resend, and PayU salt values only in backend/hosting secrets. Never use a `VITE_` variable for a private credential; browser bundles and requests are inspectable.
 - Keep `META_ACCESS_TOKEN` in backend/hosting secrets. Meta matching identifiers are SHA-256 hashed server-side, and no Meta Purchase event is sent unless the customer opts in.
 - The Supabase anon key and PayU merchant key/payment hash are public by design. Protect Supabase data with Row Level Security and keep all price, authorization, and payment verification decisions on the backend.
+- PayU callback hashes alone do not mark an order paid: the backend also checks PayU's Verify Payment API for the matching captured transaction and amount. Admin order lists omit online orders until that check succeeds.
 - Browser developer tools will always show the current user's own requests and session token. Client-side code cannot hide those from that user; frontend error handlers must not log request objects or authorization headers.
 - Backend request limits are process-local. If running multiple backend instances, configure a shared rate-limit store before scaling so SMS and login throttles apply across instances.
 - OTP columns in Supabase must support the 64-character SHA-256 hashes now stored by the backend.

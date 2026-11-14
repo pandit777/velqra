@@ -890,7 +890,7 @@ const ForgotPasswordModal = ({ isOpen, onClose, onBackToLogin }) => {
       onClick={onClose}
     >
       <div 
-        className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 border border-slate-100 shadow-2xl relative"
+        className="velqra-auth-modal relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <button 
@@ -1267,9 +1267,9 @@ const POLICY_CONTENT = {
     sections: [
       ['Processing time', 'Most confirmed orders are processed within 1-3 business days, excluding public holidays and service disruptions.'],
       ['Delivery time', 'Delivery timelines vary by location and product. The estimated date shown at checkout is indicative and may change due to courier availability.'],
-      ['Shipping address', 'Customers must provide a complete and accurate delivery address. Failed delivery caused by incorrect information may incur additional charges.'],
+      ['Shipping address', 'Customers must provide a complete and accurate delivery address. Incorrect details may delay delivery or prevent fulfillment.'],
       ['Tracking', 'Tracking details are shared when available. Contact support if your order has not moved within the expected processing period.'],
-      ['Service coverage', 'Availability, courier coverage and delivery estimates depend on the destination PIN code. Remote-area charges or additional transit time, if applicable, will be communicated before dispatch or settlement.'],
+      ['Service coverage', 'Availability, courier coverage and delivery estimates depend on the destination PIN code. Delivery is free on all orders.'],
       ['Delivery confirmation', 'Where permitted, inspect the outer package before accepting it. Report visible damage, leakage, missing items or an altered seal immediately with photographs through Contact Policy.']
     ]
   },
@@ -1998,6 +1998,10 @@ const OrdersPage = ({ onLoginRequest }) => {
       alert('❌ Payment failed. You can retry from the order details.');
       window.history.replaceState({}, '', '/orders');
       fetchOrders();
+    } else if (paymentStatus === 'pending') {
+      alert('⏳ PayU is still confirming the payment. Your order will update after PayU confirms it.');
+      window.history.replaceState({}, '', '/orders');
+      fetchOrders();
     }
   }, []);
 
@@ -2499,6 +2503,7 @@ export default function App() {
   const [cartLoading, setCartLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [placingOrder, setPlacingOrder] = useState(false);
+  const [orderSubmitError, setOrderSubmitError] = useState('');
   const [marketingConsent, setMarketingConsent] = useState(false);
   const [error, setError] = useState('');
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
@@ -2642,7 +2647,6 @@ export default function App() {
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [regStep, setRegStep] = useState('form');
-  const [regEmailOtp, setRegEmailOtp] = useState('');
   const [regSmsOtp, setRegSmsOtp] = useState('');
   const [regTimer, setRegTimer] = useState(0);
   const [regResendDisabled, setRegResendDisabled] = useState(false);
@@ -2769,6 +2773,10 @@ export default function App() {
   const [newAdminPassword, setNewAdminPassword] = useState('');
   const [confirmAdminPassword, setConfirmAdminPassword] = useState('');
   const [adminSetupError, setAdminSetupError] = useState('');
+  const [adminPhone, setAdminPhone] = useState('');
+  const [adminPhoneLoading, setAdminPhoneLoading] = useState(false);
+  const [adminPhoneSaving, setAdminPhoneSaving] = useState(false);
+  const [adminPhoneError, setAdminPhoneError] = useState('');
   const isAdminLoginPath = location.pathname === '/admin/login';
 
   const loadAdminSetupStatus = async () => {
@@ -2796,13 +2804,43 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isAdminLoggedIn) {
+      setAdminPhone('');
+      setAdminPhoneError('');
+      return undefined;
+    }
+
+    let active = true;
+    const token = sessionStorage.getItem('velqra_token');
+    setAdminPhoneLoading(true);
+    setAdminPhoneError('');
+
+    axios.get(`${API_URL}/admin/phone`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(({ data }) => {
+      if (!data.success || typeof data.phone !== 'string') {
+        throw new Error('Invalid admin phone response');
+      }
+      if (active) setAdminPhone(data.phone);
+    }).catch(error => {
+      if (active) {
+        setAdminPhoneError(error.response?.data?.message || 'Could not load the admin mobile number.');
+      }
+    }).finally(() => {
+      if (active) setAdminPhoneLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [isAdminLoggedIn]);
+
+  useEffect(() => {
     if (isAdminLoginPath && !isAdminLoggedIn) {
       setAdminAuthMode('login');
       setShowAdminAuth(true);
     }
   }, [isAdminLoginPath, isAdminLoggedIn]);
-  const [pendingPaymentOrders, setPendingPaymentOrders] = useState([]);
-
   useEffect(() => {
     const verifyAdminSession = async () => {
       const token = sessionStorage.getItem('velqra_token');
@@ -2852,6 +2890,7 @@ export default function App() {
     setCheckoutOpen(false);
     setPaymentMethod('cod');
     setMarketingConsent(false);
+    setOrderSubmitError('');
     setDeliveryForm({
       fullName: currentUser?.name || '',
       phone: getRegisteredPhone(currentUser),
@@ -2932,13 +2971,11 @@ export default function App() {
     });
   };
 
-  const calculateDeliveryCharge = (subtotal) => {
-    if (subtotal >= 199) return 0;
-    return 20;
-  };
+  const calculateDeliveryCharge = () => 0;
 
   const handlePlaceOrder = async (e) => {
     e.preventDefault();
+    setOrderSubmitError('');
 
     const token = sessionStorage.getItem('velqra_user_token');
     if (!token) {
@@ -2973,7 +3010,7 @@ export default function App() {
     }
 
     const orderStatus = paymentMethod === 'online' ? 'Payment Verification Pending' : 'Pending';
-    const deliveryCharge = calculateDeliveryCharge(totalCartPrice);
+    const deliveryCharge = calculateDeliveryCharge();
     const promoDiscountAmount = appliedPromo
       ? Math.round(totalCartPrice * (appliedPromo.discount / 100))
       : 0;
@@ -3073,7 +3110,9 @@ export default function App() {
         form.submit();
         return;
       } catch (err) {
-        showToast(err.response?.data?.message || 'Failed to place order. Please try again.', 'error');
+        const message = err.response?.data?.message || 'Failed to place order. Please try again.';
+        setOrderSubmitError(message);
+        showToast(message, 'error');
         setPlacingOrder(false);
         return;
       }
@@ -3174,37 +3213,6 @@ export default function App() {
     }
   };
 
-
-  const handleVerifyPayment = async (orderId) => {
-    const token = sessionStorage.getItem('velqra_user_token');
-    if (!token) {
-      showToast('Please login', 'error');
-      return;
-    }
-
-    try {
-      const response = await axios.patch(
-        `${API_URL}/orders/${orderId}/verify-payment`,
-        { status: 'Payment Verified' },
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      if (response.data.success) {
-        showToast('✅ Payment verified successfully!', 'success');
-        fetchOrders();
-        setPendingPaymentOrders(prev => prev.filter(id => id !== orderId));
-      } else {
-        showToast(response.data.message || 'Failed to verify payment', 'error');
-      }
-    } catch (err) {
-      showToast(err.response?.data?.message || 'Failed to verify payment', 'error');
-    }
-  };
 
   const fetchProducts = async () => {
     const cachedProducts = getCachedProducts();
@@ -3317,10 +3325,6 @@ export default function App() {
       });
       if (res.data.success) {
         setOrders(res.data.orders || []);
-        const pending = res.data.orders
-          .filter(order => order.status === 'Payment Verification Pending' && order.paymentMethod === 'online')
-          .map(order => order._id);
-        setPendingPaymentOrders(pending);
       }
     } catch (err) {
     } finally {
@@ -3329,10 +3333,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (isUserLoggedIn) {
-      fetchOrders();
-    }
-  }, [isUserLoggedIn]);
+    if (!isUserLoggedIn && !isAdminLoggedIn) return undefined;
+    fetchOrders();
+    if (!isAdminLoggedIn) return undefined;
+
+    const refreshTimer = window.setInterval(fetchOrders, 30000);
+    return () => window.clearInterval(refreshTimer);
+  }, [isUserLoggedIn, isAdminLoggedIn]);
 
   useEffect(() => {
     setDeliveryForm(prev => ({
@@ -3411,13 +3418,11 @@ export default function App() {
       if (res.data.success) {
         setRegStep('otp');
         startRegTimer();
-        // 🧪 Test mode: OTP response mein aa jayega
-        if (res.data.emailOtp || res.data.smsOtp) {
-          setRegEmailOtp(res.data.emailOtp || '');
+        if (res.data.smsOtp) {
           setRegSmsOtp(res.data.smsOtp || '');
-          showToast('🧪 Local test mode: verification codes auto-filled.', 'info');
+          showToast('🧪 Local test mode: SMS code auto-filled.', 'info');
         } else {
-          showToast('✅ Verification codes sent to your email and mobile!', 'success');
+          showToast('✅ SMS verification code sent to your mobile.', 'success');
         }
       } else {
         setError(res.data.message);
@@ -3435,8 +3440,8 @@ export default function App() {
     setLoading(true);
     setError('');
 
-    if (regEmailOtp.length !== 6 || regSmsOtp.length !== 6) {
-      setError('Enter both 6-digit verification codes');
+    if (regSmsOtp.length !== 6) {
+      setError('Enter the 6-digit SMS verification code');
       setLoading(false);
       return;
     }
@@ -3445,7 +3450,6 @@ export default function App() {
       const normalizedPhone = String(regPhone).replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
       const res = await axios.post(`${AUTH_URL}/verify-registration`, {
         phone: normalizedPhone,
-        emailOtp: regEmailOtp.trim(),
         smsOtp: regSmsOtp.trim()
       });
 
@@ -3468,7 +3472,6 @@ export default function App() {
         setRegPhone('');
         setRegPassword('');
         setRegConfirmPassword('');
-        setRegEmailOtp('');
         setRegSmsOtp('');
         setRegStep('form');
         setUserAuthMode('login');
@@ -3497,12 +3500,11 @@ export default function App() {
 
       if (res.data.success) {
         startRegTimer();
-        if (res.data.emailOtp || res.data.smsOtp) {
-          setRegEmailOtp(res.data.emailOtp || '');
+        if (res.data.smsOtp) {
           setRegSmsOtp(res.data.smsOtp || '');
-          showToast('🧪 Local test mode: verification codes auto-filled.', 'info');
+          showToast('🧪 Local test mode: SMS code auto-filled.', 'info');
         } else {
-          showToast('✅ Verification codes resent!', 'success');
+          showToast('✅ SMS verification code resent!', 'success');
         }
       } else {
         setError(res.data.message);
@@ -3641,6 +3643,36 @@ export default function App() {
       setAdminSetupError(err.response?.data?.message || 'Could not update the admin password.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleAdminPhoneSave = async (e) => {
+    e.preventDefault();
+    setAdminPhoneError('');
+    const normalizedPhone = adminPhone.replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+      setAdminPhoneError('Enter a valid 10-digit mobile number.');
+      return;
+    }
+
+    setAdminPhoneSaving(true);
+    try {
+      const token = sessionStorage.getItem('velqra_token');
+      const { data } = await axios.put(`${API_URL}/admin/phone`, { phone: normalizedPhone }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setAdminPhone(data.phone);
+      setCurrentUser(prev => {
+        if (!prev || prev.role !== 'admin') return prev;
+        const updatedUser = { ...prev, phone: data.phone };
+        sessionStorage.setItem('velqra_user', JSON.stringify(updatedUser));
+        return updatedUser;
+      });
+      showToast('Admin mobile number updated.', 'success');
+    } catch (error) {
+      setAdminPhoneError(error.response?.data?.message || 'Could not update the admin mobile number.');
+    } finally {
+      setAdminPhoneSaving(false);
     }
   };
 
@@ -3983,7 +4015,7 @@ export default function App() {
     return sum + ((item.originalPrice - item.price) * item.qty);
   }, 0);
 
-  const deliveryCharge = calculateDeliveryCharge(totalCartPrice);
+  const deliveryCharge = calculateDeliveryCharge();
   const promoDiscountAmount = appliedPromo
     ? Math.round(totalCartPrice * (appliedPromo.discount / 100))
     : 0;
@@ -4107,7 +4139,7 @@ export default function App() {
     <div className="velqra-storefront min-h-screen text-neutral-100 font-sans antialiased flex flex-col">
 
       {toast.show && (
-        <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-xl shadow-lg text-white font-bold text-sm transition-all ${
+        <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-[120] px-6 py-3 rounded-xl shadow-lg text-white font-bold text-sm transition-all ${
           toast.type === 'success' ? 'bg-green-500' :
           toast.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
         }`}>
@@ -4602,54 +4634,36 @@ export default function App() {
                     <span className="bg-[#0B3C5D]/10 text-[#0B3C5D] font-bold text-xs px-3 py-1.5 rounded-lg">
                       📊 {products.length} Items
                     </span>
-                    {pendingPaymentOrders.length > 0 && (
-                      <span className="bg-yellow-100 text-yellow-700 font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1">
-                        <span>⏳</span> {pendingPaymentOrders.length} Pending Payments
-                      </span>
-                    )}
                   </div>
                 </div>
 
-                {pendingPaymentOrders.length > 0 && (
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4">
-                    <h3 className="font-bold text-sm text-yellow-800 flex items-center gap-2 mb-3">
-                      <span>⏳</span> Payment Verification Required
-                    </h3>
-                    <div className="space-y-2">
-                      {orders.filter(order => order.status === 'Payment Verification Pending' && order.paymentMethod === 'online').map(order => (
-                        <div key={order._id} className="bg-white rounded-xl border border-yellow-200 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                          <div>
-                            <p className="font-bold text-xs text-slate-800">
-                              Order #{order._id.slice(-8).toUpperCase()}
-                            </p>
-                            <p className="text-xs text-slate-500">
-                              {order.delivery?.fullName || 'Guest'} • ₹{order.total}
-                            </p>
-                            <p className="text-[10px] text-slate-400">
-                              {order.paymentMethod === 'online' ? '📱 Online Payment' : '💵 COD'}
-                            </p>
-                          </div>
-                          <div className="flex gap-2">
-                            {order.paymentMethod === 'online' && (
-                              <button
-                                onClick={() => handleVerifyPayment(order._id)}
-                                className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-green-700 transition"
-                              >
-                                ✅ Verify Payment
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleOrderStatusChange(order._id, 'Cancelled')}
-                              className="bg-red-50 text-red-600 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-red-100 transition"
-                            >
-                              Cancel Order
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h2 className="text-sm font-extrabold text-slate-800">Admin mobile number</h2>
+                  <p className="mt-1 text-xs text-slate-500">Save the mobile number associated with this admin account.</p>
+                  <form onSubmit={handleAdminPhoneSave} className="mt-4 flex flex-col gap-3 sm:flex-row">
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
+                      maxLength={10}
+                      pattern="[6-9][0-9]{9}"
+                      required
+                      value={adminPhone}
+                      onChange={event => setAdminPhone(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                      placeholder="10-digit mobile number"
+                      aria-label="Admin mobile number"
+                      className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    />
+                    <button
+                      type="submit"
+                      disabled={adminPhoneLoading || adminPhoneSaving}
+                      className="rounded-xl bg-[#173b32] px-5 py-3 text-sm font-bold text-white disabled:opacity-50"
+                    >
+                      {adminPhoneLoading ? 'Loading...' : adminPhoneSaving ? 'Saving...' : 'Save mobile number'}
+                    </button>
+                  </form>
+                  {adminPhoneError && <p role="alert" className="mt-2 text-sm text-red-600">{adminPhoneError}</p>}
+                </section>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
                   {/* Add Product Form */}
@@ -4958,14 +4972,6 @@ export default function App() {
                                         <option value="Delivered">Delivered</option>
                                         <option value="Cancelled">Cancelled</option>
                                       </select>
-                                      {order.status === 'Payment Verification Pending' && order.paymentMethod === 'online' && (
-                                        <button
-                                          onClick={() => handleVerifyPayment(order._id)}
-                                          className="text-[10px] font-bold text-green-600 hover:text-green-700"
-                                        >
-                                          ✅ Verify Payment
-                                        </button>
-                                      )}
                                     </div>
                                   </td>
                                 </tr>
@@ -5150,7 +5156,6 @@ export default function App() {
                       setRegPhone('');
                       setRegPassword('');
                       setRegConfirmPassword('');
-                      setRegEmailOtp('');
                       setRegSmsOtp('');
                       openUserAuth('register');
                     }}
@@ -5254,14 +5259,14 @@ export default function App() {
                     />
                   </label>
                   <p className="text-xs leading-relaxed text-slate-500">
-                    We’ll verify that you own both your email address and mobile number.
+                    We’ll send a verification code to your mobile number. Your email is used for account details.
                   </p>
                   <button
                     type="submit"
                     disabled={loading}
                     className="w-full rounded-xl bg-[#173b32] py-3.5 text-sm font-bold text-white transition-colors hover:bg-[#102a24] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {loading ? 'Sending verification codes…' : 'Verify email & mobile'}
+                    {loading ? 'Sending SMS code…' : 'Send SMS code'}
                   </button>
                 </form>
 
@@ -5279,14 +5284,14 @@ export default function App() {
                 </div>
               </>
             ) : regStep === 'otp' ? (
-              // REGISTER - Step 2: Verify email and mobile
+              // REGISTER - Step 2: Verify mobile number
               <>
                 <div className="mb-1 flex items-center gap-2">
                   <span className="text-2xl">🔐</span>
-                  <h3 className="text-lg font-black text-white">Verify your email and mobile</h3>
+                  <h3 className="text-lg font-black text-white">Verify your mobile number</h3>
                 </div>
                 <p className="text-[11px] text-slate-400 mb-4">
-                  Enter the separate 6-digit codes sent to <strong>{regEmail}</strong> and mobile ending in <strong>{regPhone.slice(-4)}</strong>.
+                  Enter the 6-digit SMS code sent to the mobile ending in <strong>{regPhone.slice(-4)}</strong>.
                 </p>
 
                 {error && (
@@ -5297,21 +5302,7 @@ export default function App() {
 
                 <form onSubmit={handleVerifyRegistrationOTP} className="space-y-4">
                   <label className="block text-xs font-semibold text-white">
-                    Email verification code
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      required
-                      maxLength={6}
-                      value={regEmailOtp}
-                      onChange={(e) => setRegEmailOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="6-digit email code"
-                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-center text-base font-bold tracking-[0.3em] text-slate-900 focus:border-[#173b32] focus:outline-none focus:ring-4 focus:ring-[#173b32]/10"
-                    />
-                  </label>
-                  <label className="block text-xs font-semibold text-white">
-                    Mobile verification code
+                    SMS verification code
                   <input
                     type="text"
                     inputMode="numeric"
@@ -5340,7 +5331,7 @@ export default function App() {
 
                   <button
                     type="submit"
-                    disabled={loading || regEmailOtp.length !== 6 || regSmsOtp.length !== 6}
+                    disabled={loading || regSmsOtp.length !== 6}
                     className="w-full bg-green-600 text-white font-bold py-3 rounded-xl text-sm hover:bg-green-700 disabled:opacity-50"
                   >
                     {loading ? '⏳ Verifying...' : '✅ Verify & Register'}
@@ -5519,27 +5510,9 @@ export default function App() {
                 </div>
 
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate-500">{t('Delivery Charge')}</span>
-                  <span className={`font-bold ${deliveryCharge === 0 ? 'text-green-600' : 'text-[#FF5722]'}`}>
-                    {deliveryCharge === 0 ? `🎉 ${t('Free')}` : formatPrice(deliveryCharge)}
-                  </span>
+                  <span className="text-slate-500">{t('Delivery')}</span>
+                  <span className="font-bold text-green-600">🎉 {t('Free')}</span>
                 </div>
-
-                {deliveryCharge === 0 && (
-                  <div className="bg-green-50 rounded-lg p-2 text-center">
-                    <p className="text-[10px] text-green-600 font-bold">
-                      🎉 {t('Free delivery! (Order above INR 199)')}
-                    </p>
-                  </div>
-                )}
-
-                {deliveryCharge > 0 && (
-                  <div className="bg-slate-50 rounded-lg p-2 text-center">
-                    <p className="text-[10px] text-slate-500">
-                      {t('Add {amount} more for free delivery', { amount: formatPrice(199 - totalCartPrice) })} 🚚
-                    </p>
-                  </div>
-                )}
 
                 {totalSavings > 0 && (
                   <div className="flex justify-between items-center text-xs text-green-600">
@@ -5697,6 +5670,11 @@ export default function App() {
                     </label>
 
                     <div className="flex flex-col gap-2">
+                      {orderSubmitError && (
+                        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                          {orderSubmitError}
+                        </p>
+                      )}
                                             <button
                         type="submit"
                         disabled={placingOrder}

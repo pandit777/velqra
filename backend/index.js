@@ -10,7 +10,6 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const multer = require('multer');
 const crypto = require('crypto');
-const { Resend } = require('resend');
 const { generateInvoicePdf } = require('./utils/invoice');
 
 dotenv.config();
@@ -153,9 +152,6 @@ const legacyAdminPassword = process.env.LEGACY_ADMIN_PASSWORD || '';
 const fast2smsApiKey = process.env.FAST2SMS_API_KEY;
 const smsTestMode = process.env.NODE_ENV !== 'production' &&
   (process.env.SMS_TEST_MODE || 'true').toLowerCase() === 'true';
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-const emailTestMode = process.env.NODE_ENV !== 'production' &&
-  (process.env.EMAIL_TEST_MODE || 'true').toLowerCase() === 'true' && !resend;
 const smsTestNumbers = (process.env.SMS_TEST_NUMBERS || '')
   .split(',')
   .map(n => String(n).replace(/\D/g, '').slice(-10))
@@ -166,8 +162,11 @@ console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
 console.log(`🔗 Supabase: ${supabaseUrl ? '✅' : '❌'}`);
 console.log(`📱 Fast2SMS: ${fast2smsApiKey ? '✅' : '❌'}`);
 console.log(`🧪 SMS Test Mode: ${smsTestMode ? 'ON' : 'OFF'}`);
-console.log(`📱 SMS Whitelist entries: ${smsTestNumbers.length}`);
-console.log(`✉️ Email OTP: ${resend ? 'Resend configured' : emailTestMode ? 'Local test mode' : 'Not configured'}`);
+console.log(`📱 SMS test numbers configured: ${smsTestNumbers.length}`);
+if (smsTestMode) {
+  console.log('ℹ️ SMS test mode: outgoing SMS is disabled; OTPs are available locally.');
+}
+console.log('✉️ Registration email OTP: disabled (mobile OTP only)');
 console.log(`💳 PayU: ${payuKey ? '✅' : '❌'}`);
 console.log(`📊 Meta Conversions API: ${metaCapiConfigured ? 'configured' : 'not configured'}`);
 
@@ -273,36 +272,14 @@ const matchesHash = (expectedHash, suppliedHash) => {
   return crypto.timingSafeEqual(expected, supplied);
 };
 
-async function sendRegistrationEmail(email, otp, name) {
-  if (!resend) {
-    if (emailTestMode) return { sent: false, testMode: true };
-    return { sent: false, reason: 'email_provider_not_configured' };
-  }
-
-  const from = process.env.EMAIL_FROM;
-  if (!from) return { sent: false, reason: 'email_sender_not_configured' };
-
-  const { error } = await resend.emails.send({
-    from,
-    to: [email],
-    subject: 'Verify your AteliMarket account',
-    text: `Hello ${name}, your AteliMarket verification code is ${otp}. It expires in 10 minutes. Do not share it with anyone.`
-  });
-  if (error) {
-    console.error('Registration email delivery failed:', error.message);
-    return { sent: false, reason: 'email_delivery_failed' };
-  }
-  return { sent: true };
-}
-
 async function sendFast2SMS(phoneNumber, otpCode, name = 'User') {
   const normalizedPhone = String(phoneNumber || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').slice(-10);
   if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
     return { sent: false, reason: 'invalid_phone' };
   }
 
-  // Test-mode codes are returned only to non-production callers.
-  if (smsTestMode && !smsTestNumbers.includes(normalizedPhone)) {
+  // Test mode must not make live provider requests, even for configured test numbers.
+  if (smsTestMode) {
     return { sent: false, reason: 'test_mode_skip', otp: otpCode };
   }
 
@@ -332,9 +309,19 @@ async function sendFast2SMS(phoneNumber, otpCode, name = 'User') {
     console.error('Fast2SMS rejected the OTP request');
     return { sent: false, reason: 'api_error' };
   } catch (error) {
+    const providerMessage = error.response?.data?.message;
+    const safeProviderMessage = (typeof providerMessage === 'string'
+      ? providerMessage
+      : Array.isArray(providerMessage) ? providerMessage.join(' ') : '')
+      .split(fast2smsApiKey || '\0').join('[redacted]')
+      .split(normalizedPhone).join('[phone]')
+      .split(otpCode).join('[otp]')
+      .replace(/\s+/g, ' ')
+      .slice(0, 200);
     console.error('❌ Fast2SMS EXCEPTION:', {
       status: error.response?.status,
-      code: error.code
+      code: error.code,
+      ...(safeProviderMessage ? { providerMessage: safeProviderMessage } : {})
     });
     return { sent: false, reason: 'exception' };
   }
@@ -367,18 +354,22 @@ if (process.env.NODE_ENV !== 'production') {
   );
 }
 
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) cb(null, true);
-    else {
-      const error = new Error('Not allowed by CORS');
-      error.status = 403;
-      cb(error);
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+app.use(cors((req, cb) => {
+  const origin = req.header('Origin');
+  const isPayuCallback = req.path === '/api/payment/payu/callback';
+  const payuOrigins = ['https://test.payu.in', 'https://secure.payu.in'];
+  if (!origin) return cb(null, { origin: false });
+  if (allowedOrigins.includes(origin) ||
+      (isPayuCallback && payuOrigins.includes(origin))) {
+    return cb(null, {
+      origin: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    });
+  }
+  const error = new Error('Not allowed by CORS');
+  error.status = 403;
+  cb(error);
 }));
 
 app.use('/api', apiRateLimit, noStore);
@@ -524,6 +515,46 @@ app.put('/api/admin/password', requireAdmin, async (req, res) => {
   }
 });
 
+app.get('/api/admin/phone', requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('admins')
+      .select('phone')
+      .eq('id', req.adminUser.id)
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, phone: data.phone || '' });
+  } catch (error) {
+    console.error('Admin phone fetch error:', error.code || 'database error');
+    res.status(500).json({ success: false, message: 'Could not load the admin mobile number' });
+  }
+});
+
+app.put('/api/admin/phone', requireAdmin, async (req, res) => {
+  try {
+    const phone = typeof req.body?.phone === 'string'
+      ? req.body.phone.replace(/\D/g, '')
+      : '';
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+      return res.status(400).json({ success: false, message: 'Enter a valid 10-digit mobile number' });
+    }
+
+    const { data, error } = await supabase
+      .from('admins')
+      .update({ phone, updated_at: new Date().toISOString() })
+      .eq('id', req.adminUser.id)
+      .select('phone')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, phone: data.phone });
+  } catch (error) {
+    console.error('Admin phone update error:', error.code || 'database error');
+    res.status(500).json({ success: false, message: 'Could not update the admin mobile number' });
+  }
+});
+
 const requireAuth = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -624,6 +655,12 @@ const formatOrder = (order, includeAttribution = false) => {
     };
   }
   return formattedOrder;
+};
+
+const isOnlinePaymentVerified = (order) => {
+  if ((order.payment_method || 'cod') !== 'online') return true;
+  return Array.isArray(order.status_history) &&
+    order.status_history.some(entry => entry.status === 'Payment Verified' && entry.updatedBy === 'PayU');
 };
 
 const sanitizeAttributionTouch = (touch) => {
@@ -735,7 +772,7 @@ const sendMetaPurchaseEvent = async (order) => {
   }
 };
 
-const calculateDeliveryCharge = (subtotal) => subtotal >= 199 ? 0 : 20;
+const calculateDeliveryCharge = () => 0;
 
 // =============================================
 // RETURN HELPERS
@@ -809,9 +846,6 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
     if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
       return res.status(400).json({ success: false, message: 'Valid 10-digit phone required' });
     }
-    if (!resend && !emailTestMode) {
-      return res.status(503).json({ success: false, message: 'Email verification is temporarily unavailable' });
-    }
     if (!fast2smsApiKey && !smsTestMode) {
       return res.status(503).json({ success: false, message: 'Mobile verification is temporarily unavailable' });
     }
@@ -837,7 +871,6 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
     }
 
     const smsOtp = String(crypto.randomInt(100000, 1000000));
-    const emailOtp = String(crypto.randomInt(100000, 1000000));
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     const passwordHash = await bcrypt.hash(password, 12);
     const { error: otpError } = await supabase.from('registration_otps').upsert({
@@ -850,20 +883,12 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
         email,
         phone: normalizedPhone,
         passwordHash,
-        emailOtpHash: hashOtp(emailOtp),
         attempts: 0,
         lastSentAt: new Date().toISOString()
       }
     }, { onConflict: 'email' });
 
     if (otpError) return res.status(500).json({ success: false, message: 'Failed to generate OTP' });
-
-    const emailResult = await sendRegistrationEmail(email, emailOtp, cleanName);
-    if (!emailResult.sent) {
-      await supabase.from('registration_otps').delete().eq('email', normalizedPhone);
-      console.error('Registration email verification unavailable:', emailResult.reason);
-      return res.status(502).json({ success: false, message: 'Could not send email verification code. Please try again later.' });
-    }
 
     const smsResult = await sendFast2SMS(normalizedPhone, smsOtp, cleanName);
     if (!smsResult.sent && smsResult.reason !== 'test_mode_skip') {
@@ -873,13 +898,12 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
 
     const response = {
       success: true,
-      message: 'Verification codes sent to your email and mobile number.',
+      message: 'Verification code sent to your mobile number.',
       phone: normalizedPhone.slice(-4).padStart(normalizedPhone.length, '*'),
       expiresAt
     };
-    if (emailResult.testMode) response.emailOtp = emailOtp;
     if (smsResult.reason === 'test_mode_skip') response.smsOtp = smsOtp;
-    if (emailResult.testMode || smsResult.reason === 'test_mode_skip') {
+    if (smsResult.reason === 'test_mode_skip') {
       response.devNote = 'Verification codes are shown only in non-production test mode.';
     }
     res.json(response);
@@ -891,12 +915,11 @@ app.post('/api/auth/register', otpRequestRateLimit, otpTargetRequestRateLimit, a
 
 app.post('/api/auth/verify-registration', otpVerifyRateLimit, otpTargetVerifyRateLimit, async (req, res) => {
   try {
-    const { phone, emailOtp, smsOtp } = req.body;
+    const { phone, smsOtp } = req.body;
     const normalizedPhone = String(phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
     if (!/^[6-9]\d{9}$/.test(normalizedPhone) ||
-        !/^\d{6}$/.test(String(emailOtp || '')) ||
         !/^\d{6}$/.test(String(smsOtp || ''))) {
-      return res.status(400).json({ success: false, message: 'Phone and both 6-digit verification codes are required' });
+      return res.status(400).json({ success: false, message: 'Phone and 6-digit SMS verification code are required' });
     }
 
     const { data: otpData, error: otpError } = await supabase
@@ -911,7 +934,7 @@ app.post('/api/auth/verify-registration', otpVerifyRateLimit, otpTargetVerifyRat
       return res.status(400).json({ success: false, message: 'OTP expired' });
     }
     const pendingData = otpData.data || {};
-    if (!matchesOtp(otpData.otp, smsOtp) || !matchesOtp(pendingData.emailOtpHash, emailOtp)) {
+    if (!matchesOtp(otpData.otp, smsOtp)) {
       const attempts = Number(pendingData.attempts || 0) + 1;
       if (attempts >= 5) {
         await supabase.from('registration_otps').delete().eq('email', normalizedPhone);
@@ -920,7 +943,7 @@ app.post('/api/auth/verify-registration', otpVerifyRateLimit, otpTargetVerifyRat
       const { error: attemptsError } = await supabase.from('registration_otps')
         .update({ data: { ...pendingData, attempts } }).eq('email', normalizedPhone);
       if (attemptsError) throw attemptsError;
-      return res.status(400).json({ success: false, message: 'Invalid email or mobile verification code' });
+      return res.status(400).json({ success: false, message: 'Invalid mobile verification code' });
     }
 
     const { name, email, phone: phoneFromData, passwordHash } = pendingData;
@@ -980,23 +1003,14 @@ app.post('/api/auth/resend-registration-otp', otpRequestRateLimit, otpTargetRequ
     if (!pendingData.email || !pendingData.passwordHash) {
       return res.status(400).json({ success: false, message: 'Registration must be restarted with an email address' });
     }
-    if (!resend && !emailTestMode) {
-      return res.status(503).json({ success: false, message: 'Email verification is temporarily unavailable' });
-    }
     const lastSentAt = new Date(pendingData.lastSentAt || otpData.created_at).getTime();
     if (Date.now() - lastSentAt < 60_000) {
       return res.status(429).json({ success: false, message: 'Please wait before requesting another verification code' });
     }
 
     const smsOtp = String(crypto.randomInt(100000, 1000000));
-    const emailOtp = String(crypto.randomInt(100000, 1000000));
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    const emailResult = await sendRegistrationEmail(pendingData.email, emailOtp, pendingData.name || 'Customer');
-    if (!emailResult.sent) {
-      console.error('Registration email resend failed:', emailResult.reason);
-      return res.status(502).json({ success: false, message: 'Could not resend email verification code. Please try again later.' });
-    }
     const smsResult = await sendFast2SMS(pendingData.phone || normalizedPhone, smsOtp, pendingData.name || 'Customer');
     if (!smsResult.sent && smsResult.reason !== 'test_mode_skip') {
       return res.status(502).json({ success: false, message: 'Could not resend mobile verification code. Please try again later.' });
@@ -1008,17 +1022,15 @@ app.post('/api/auth/resend-registration-otp', otpRequestRateLimit, otpTargetRequ
       updated_at: new Date().toISOString(),
       data: {
         ...pendingData,
-        emailOtpHash: hashOtp(emailOtp),
         attempts: 0,
         lastSentAt: new Date().toISOString()
       }
     }).eq('email', normalizedPhone);
     if (updateError) throw updateError;
 
-    const response = { success: true, message: 'Verification codes resent', expiresAt };
-    if (emailResult.testMode) response.emailOtp = emailOtp;
+    const response = { success: true, message: 'Mobile verification code resent', expiresAt };
     if (smsResult.reason === 'test_mode_skip') response.smsOtp = smsOtp;
-    if (emailResult.testMode || smsResult.reason === 'test_mode_skip') {
+    if (smsResult.reason === 'test_mode_skip') {
       response.devNote = 'Verification codes are shown only in non-production test mode.';
     }
     res.json(response);
@@ -1063,7 +1075,7 @@ app.post('/api/auth/login', otpVerifyRateLimit, otpTargetVerifyRateLimit, async 
       return res.json({
         success: true, token,
         mustChangePassword: await bcrypt.compare(initialAdminPassword, admin.password),
-        user: { id: admin.id, email: 'admin', name: 'Admin', role: 'admin' }
+        user: { id: admin.id, email: 'admin', name: 'Admin', phone: admin.phone || '', role: 'admin' }
       });
     }
 
@@ -1094,6 +1106,28 @@ app.get('/api/auth/verify', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ success: false, message: 'No token' });
     const decoded = jwt.verify(token, jwtSecret);
+    if (decoded.role === 'admin') {
+      const { data: admin, error } = await supabase.from('admins')
+        .select('id, email, phone, created_at')
+        .eq('id', decoded.userId).maybeSingle();
+      if (error) {
+        console.error('Admin verification error:', error.code || 'database error');
+        return res.status(500).json({ success: false, message: 'Could not verify admin session' });
+      }
+      if (!admin) return res.status(401).json({ success: false, message: 'Admin not found' });
+      return res.json({
+        success: true,
+        user: {
+          id: admin.id,
+          email: admin.email,
+          name: 'Admin',
+          phone: admin.phone || '',
+          role: 'admin',
+          createdAt: admin.created_at
+        }
+      });
+    }
+
     const { data: user } = await supabase.from('users')
       .select('id, name, email, phone, role, is_verified, created_at')
       .eq('id', decoded.userId).single();
@@ -2216,18 +2250,102 @@ app.post('/api/payment/payu/initiate', requireAuth, noStore, async (req, res) =>
   }
 });
 
-/**
- * POST /api/payment/payu/callback
- * PayU form POST karta hai (surl/furl)
- * Reverse hash verify → order status update
- */
-app.post('/api/payment/payu/callback', async (req, res) => {
+const verifyPayuTransaction = async (txnid) => {
+  if (!payuKey || !payuSalt) throw new Error('PayU is not configured');
+
+  const paymentUrl = parseConfiguredUrl('PAYU_BASE_URL', payuBaseUrl);
+  let verifyUrl;
+  if (paymentUrl.hostname === 'test.payu.in') {
+    verifyUrl = 'https://test.payu.in/merchant/postservice.php?form=2';
+  } else if (paymentUrl.hostname === 'secure.payu.in') {
+    verifyUrl = 'https://info.payu.in/merchant/postservice.php?form=2';
+  } else {
+    throw new Error('PAYU_BASE_URL must use a supported PayU host');
+  }
+
+  const command = 'verify_payment';
+  const hash = crypto.createHash('sha512')
+    .update(`${payuKey}|${command}|${txnid}|${payuSalt}`)
+    .digest('hex');
+  const form = new URLSearchParams({ key: payuKey, command, var1: txnid, hash });
+  const { data } = await axios.post(verifyUrl, form.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 15000
+  });
+  const transaction = data?.transaction_details?.[txnid];
+  const transactionStatus = String(transaction?.status || '').toLowerCase();
+  const unmappedStatus = String(transaction?.unmappedstatus || '').toLowerCase();
+  const transactionId = String(transaction?.txnid || '');
+  const amount = Number(transaction?.amt ?? transaction?.transaction_amount);
+
+  return {
+    captured: Number(data?.status) === 1 &&
+      transactionId === txnid &&
+      transactionStatus === 'success' &&
+      unmappedStatus === 'captured' &&
+      Number.isFinite(amount),
+    amount,
+    mihpayid: String(transaction?.mihpayid || '')
+  };
+};
+
+const markPayuOrderVerified = async (order, transaction) => {
+  const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
+  history.push({
+    status: 'Payment Verified',
+    timestamp: new Date().toISOString(),
+    updatedBy: 'PayU',
+    details: `PayU ID: ${String(transaction.mihpayid || 'N/A').slice(0, 100)}`
+  });
+
+  const { data: updatedOrder, error: updateError } = await supabase.from('orders').update({
+    status: 'Payment Verified',
+    status_history: history,
+    updated_at: new Date().toISOString()
+  }).eq('id', order.id).eq('reference_id', order.reference_id)
+    .eq('status', 'Payment Verification Pending').select('*').maybeSingle();
+  if (updateError) throw updateError;
+
+  if (!updatedOrder) {
+    const { data: latestOrder, error } = await supabase.from('orders')
+      .select('*').eq('id', order.id).maybeSingle();
+    if (error) throw error;
+    return { order: latestOrder };
+  }
+
+  void sendMetaPurchaseEvent(updatedOrder);
   try {
+    for (const item of (order.items || [])) {
+      if (item.product_id) {
+        const { data: product } = await supabase.from('products')
+          .select('stock').eq('id', item.product_id).single();
+        if (product) {
+          await supabase.from('products').update({
+            stock: Math.max(0, (product.stock || 0) - (item.qty || 1))
+          }).eq('id', item.product_id);
+        }
+      }
+    }
+  } catch (stockError) {
+    console.error('Payment verified but stock update failed:', stockError.message);
+  }
+
+  return { order: updatedOrder };
+};
+
+/**
+ * GET/POST /api/payment/payu/callback
+ * PayU response is verified before redirecting back to the storefront.
+ * Reverse hash and server-side transaction verification → order status update
+ */
+const handlePayuCallback = async (req, res) => {
+  try {
+    const callbackData = req.method === 'GET' ? req.query : req.body;
     const {
       status, txnid, mihpayid, amount, productinfo,
       firstname, email, hash, key: callbackKey, additionalCharges,
       udf1 = '', udf2 = '', udf3 = '', udf4 = '', udf5 = '',
-    } = req.body;
+    } = callbackData;
 
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(txnid || '')) || !hash) {
       return res.redirect(`${frontendUrl}/orders?payment=failure&reason=missing_fields`);
@@ -2257,7 +2375,7 @@ app.post('/api/payment/payu/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/orders?payment=failure&reason=hash_mismatch`);
     }
 
-    if (order.status === 'Payment Verified' || ['Confirmed', 'Shipped', 'Delivered'].includes(order.status)) {
+    if (isOnlinePaymentVerified(order)) {
       return res.redirect(`${frontendUrl}/orders?payment=success&txnid=${encodeURIComponent(txnid)}`);
     }
     if (order.status === 'Payment Failed') {
@@ -2267,52 +2385,24 @@ app.post('/api/payment/payu/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/orders?payment=failure&reason=invalid_order_state`);
     }
 
-    const history = Array.isArray(order?.status_history) ? [...order.status_history] : [];
-
     if (status === 'success') {
-      history.push({
-        status: 'Payment Verified',
-        timestamp: new Date().toISOString(),
-        updatedBy: 'PayU',
-        details: `PayU ID: ${String(mihpayid || 'N/A').slice(0, 100)}`
-      });
-      const { data: updatedOrder, error: updateError } = await supabase.from('orders').update({
-        status: 'Payment Verified',
-        reference_id: txnid,
-        status_history: history,
-        updated_at: new Date().toISOString()
-      }).eq('id', order.id).eq('reference_id', txnid)
-        .eq('status', 'Payment Verification Pending').select('id').maybeSingle();
-      if (updateError) throw updateError;
-      if (!updatedOrder) {
-        const { data: latestOrder } = await supabase.from('orders')
-          .select('status').eq('id', order.id).maybeSingle();
-        const alreadyPaid = latestOrder &&
-          ['Payment Verified', 'Confirmed', 'Shipped', 'Delivered'].includes(latestOrder.status);
-        return res.redirect(`${frontendUrl}/orders?payment=${alreadyPaid ? 'success' : 'failure'}&txnid=${encodeURIComponent(txnid)}`);
+      const verification = await verifyPayuTransaction(String(txnid));
+      if (!verification.captured ||
+          verification.amount.toFixed(2) !== Number(order.total).toFixed(2) ||
+          (mihpayid && verification.mihpayid && String(mihpayid) !== verification.mihpayid)) {
+        console.warn('PayU callback received before transaction was confirmed as captured');
+        return res.redirect(`${frontendUrl}/orders?payment=pending&txnid=${encodeURIComponent(txnid)}`);
       }
 
-      void sendMetaPurchaseEvent(order);
-
-      try {
-        for (const item of (order?.items || [])) {
-          if (item.product_id) {
-            const { data: prod } = await supabase.from('products')
-              .select('stock').eq('id', item.product_id).single();
-            if (prod) {
-              await supabase.from('products').update({
-                stock: Math.max(0, (prod.stock || 0) - (item.qty || 1))
-              }).eq('id', item.product_id);
-            }
-          }
-        }
-      } catch (stockErr) {
-        console.error('Payment verified but stock update failed:', stockErr.message);
+      const confirmation = await markPayuOrderVerified(order, verification);
+      if (!confirmation.order || !isOnlinePaymentVerified(confirmation.order)) {
+        return res.redirect(`${frontendUrl}/orders?payment=pending&txnid=${encodeURIComponent(txnid)}`);
       }
     } else {
       if (status !== 'failure') {
         return res.redirect(`${frontendUrl}/orders?payment=failure&reason=invalid_status`);
       }
+      const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
       history.push({
         status: 'Payment Failed',
         timestamp: new Date().toISOString(),
@@ -2328,9 +2418,8 @@ app.post('/api/payment/payu/callback', async (req, res) => {
       if (updateError) throw updateError;
       if (!updatedOrder) {
         const { data: latestOrder } = await supabase.from('orders')
-          .select('status').eq('id', order.id).maybeSingle();
-        const alreadyPaid = latestOrder &&
-          ['Payment Verified', 'Confirmed', 'Shipped', 'Delivered'].includes(latestOrder.status);
+          .select('*').eq('id', order.id).maybeSingle();
+        const alreadyPaid = latestOrder && isOnlinePaymentVerified(latestOrder);
         return res.redirect(`${frontendUrl}/orders?payment=${alreadyPaid ? 'success' : 'failure'}&txnid=${encodeURIComponent(txnid)}`);
       }
     }
@@ -2344,7 +2433,9 @@ app.post('/api/payment/payu/callback', async (req, res) => {
     console.error('PayU callback processing failed:', err.message);
     res.redirect(`${frontendUrl}/orders?payment=failure&reason=server_error`);
   }
-});
+};
+app.post('/api/payment/payu/callback', handlePayuCallback);
+app.get('/api/payment/payu/callback', handlePayuCallback);
 
 // =============================================
 // ORDER ROUTES
@@ -2477,7 +2568,7 @@ app.post('/api/orders', requireAuth, async (req, res) => {
     }
 
     const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.qty, 0);
-    const calculatedTotal = subtotal + calculateDeliveryCharge(subtotal);
+    const calculatedTotal = subtotal + calculateDeliveryCharge();
     if (Math.abs(Number(total) - calculatedTotal) > 0.01) {
       return res.status(400).json({
         success: false,
@@ -2542,15 +2633,18 @@ app.get('/api/orders', requireAuth, async (req, res) => {
     const decoded = jwt.verify(token, jwtSecret);
     const userId = decoded.userId;
 
-    const { data: admin } = await supabase.from('admins').select('id').eq('id', userId).single();
+    const { data: admin } = await supabase.from('admins').select('id').eq('id', userId).maybeSingle();
+    const { data: user } = await supabase.from('users').select('role').eq('id', userId).maybeSingle();
+    const isAdmin = Boolean(admin || user?.role === 'admin');
     let query = supabase.from('orders').select('*');
-    if (admin) query = query.order('created_at', { ascending: false });
+    if (isAdmin) query = query.order('created_at', { ascending: false });
     else query = query.eq('user_id', userId).order('created_at', { ascending: false });
 
     const { data: orders, error } = await query;
     if (error) return res.status(500).json({ success: false, message: 'Error' });
 
-    res.json({ success: true, orders: orders.map(formatOrder) });
+    const visibleOrders = (orders || []).filter(order => !isAdmin || isOnlinePaymentVerified(order));
+    res.json({ success: true, orders: visibleOrders.map(formatOrder) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error' });
   }
@@ -2774,23 +2868,28 @@ app.patch('/api/orders/:id/verify-payment', requireAdmin, async (req, res) => {
     const isAdmin = admin || (user && user.role === 'admin');
     if (!isAdmin) return res.status(403).json({ success: false, message: 'Admin only' });
 
-    const { data: order } = await supabase.from('orders').select('*').eq('id', req.params.id).single();
+    const { data: order, error: orderError } = await supabase.from('orders').select('*').eq('id', req.params.id).maybeSingle();
+    if (orderError) throw orderError;
     if (!order) return res.status(404).json({ success: false, message: 'Not found' });
+    if (order.payment_method !== 'online' || !order.reference_id) {
+      return res.status(400).json({ success: false, message: 'PayU transaction not found for this order' });
+    }
     if (order.status !== 'Payment Verification Pending') {
       return res.status(400).json({ success: false, message: `Cannot verify. Status: ${order.status}` });
     }
 
-    const history = order.status_history || [];
-    history.push({ status: 'Payment Verified', timestamp: new Date().toISOString(), updatedBy: 'Admin' });
-
-    const { data: updated } = await supabase.from('orders').update({
-      status: 'Payment Verified', status_history: history, updated_at: new Date().toISOString()
-    }).eq('id', req.params.id).select().single();
-
-    if (order.payment_method === 'online') void sendMetaPurchaseEvent(updated);
-    res.json({ success: true, message: 'Payment verified', order: formatOrder(updated) });
+    const verification = await verifyPayuTransaction(order.reference_id);
+    if (!verification.captured || verification.amount.toFixed(2) !== Number(order.total).toFixed(2)) {
+      return res.status(409).json({ success: false, message: 'PayU has not confirmed a captured payment for this order' });
+    }
+    const confirmation = await markPayuOrderVerified(order, verification);
+    if (!confirmation.order || !isOnlinePaymentVerified(confirmation.order)) {
+      return res.status(409).json({ success: false, message: 'Payment status changed; refresh the order list' });
+    }
+    res.json({ success: true, message: 'PayU payment verified', order: formatOrder(confirmation.order) });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error' });
+    console.error('PayU admin verification failed:', error.message);
+    res.status(502).json({ success: false, message: 'Unable to verify payment with PayU' });
   }
 });
 
@@ -2813,8 +2912,19 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
     }
 
     const { data: order } = await supabase.from('orders')
-      .select('status_history, status, payment_method').eq('id', req.params.id).single();
+      .select('*').eq('id', req.params.id).single();
     if (!order) return res.status(404).json({ success: false, message: 'Not found' });
+    const paidStatuses = ['Payment Verified', 'Confirmed', 'Shipped', 'Delivered', 'Return Requested', 'Return Approved', 'Return Rejected'];
+    if (order.payment_method === 'online' &&
+        !isOnlinePaymentVerified(order) &&
+        paidStatuses.includes(status)) {
+      return res.status(409).json({ success: false, message: 'PayU must confirm payment before this order can be marked paid' });
+    }
+    if (order.payment_method === 'online' &&
+        isOnlinePaymentVerified(order) &&
+        status === 'Payment Verification Pending') {
+      return res.status(409).json({ success: false, message: 'A verified online payment cannot be reset to pending' });
+    }
 
     const history = order.status_history || [];
     history.push({ status, timestamp: new Date().toISOString(), updatedBy: user?.name || 'Admin' });
@@ -2822,12 +2932,6 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
     const { data: updated } = await supabase.from('orders').update({
       status, status_history: history, updated_at: new Date().toISOString()
     }).eq('id', req.params.id).select().single();
-
-    if (order.payment_method === 'online' &&
-        order.status === 'Payment Verification Pending' &&
-        ['Payment Verified', 'Confirmed', 'Shipped', 'Delivered'].includes(status)) {
-      void sendMetaPurchaseEvent(updated);
-    }
 
     res.json({
       success: true, message: 'Status updated',
@@ -2884,33 +2988,39 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
     if (!isAdmin) return res.status(403).json({ success: false, message: 'Admin only' });
 
     const { status, search, page = 1, limit = 10 } = req.query;
-    let query = supabase.from('orders').select('*', { count: 'exact' });
+    let query = supabase.from('orders').select('*');
     if (status && status !== 'all') query = query.eq('status', status);
     if (search) {
       query = query.or(`user_name.ilike.%${search}%,user_email.ilike.%${search}%,delivery->>phone.ilike.%${search}%`);
     }
 
-    const skip = (page - 1) * limit;
-    const { data: orders, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(skip, skip + parseInt(limit) - 1);
+    const { data: fetchedOrders, error } = await query.order('created_at', { ascending: false });
     if (error) return res.status(500).json({ success: false, message: 'Error' });
 
-    const { data: statusCounts } = await supabase.from('orders').select('status');
+    const visibleOrders = (fetchedOrders || []).filter(isOnlinePaymentVerified);
+    const parsedPage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const parsedLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 10));
+    const skip = (parsedPage - 1) * parsedLimit;
+    const orders = visibleOrders.slice(skip, skip + parsedLimit);
+
+    const { data: statusCounts, error: countsError } = await supabase.from('orders').select('status, payment_method, status_history');
+    if (countsError) return res.status(500).json({ success: false, message: 'Unable to load order counts' });
     const counts = {
-  all: 0, Pending: 0, 'Payment Verification Pending': 0,
-  'Payment Verified': 0, 'Payment Failed': 0, Confirmed: 0, Shipped: 0, Delivered: 0, Cancelled: 0
-};
+      all: 0, Pending: 0, 'Payment Verification Pending': 0,
+      'Payment Verified': 0, 'Payment Failed': 0, Confirmed: 0, Shipped: 0, Delivered: 0, Cancelled: 0
+    };
     if (statusCounts) {
-      counts.all = statusCounts.length;
-      statusCounts.forEach(i => { if (counts.hasOwnProperty(i.status)) counts[i.status]++; });
+      statusCounts.filter(isOnlinePaymentVerified).forEach(item => {
+        counts.all++;
+        if (Object.prototype.hasOwnProperty.call(counts, item.status)) counts[item.status]++;
+      });
     }
 
     res.json({
       success: true, orders: orders.map(order => formatOrder(order, true)),
       pagination: {
-        page: parseInt(page), limit: parseInt(limit),
-        total: count || orders.length, pages: Math.ceil((count || orders.length) / limit)
+        page: parsedPage, limit: parsedLimit,
+        total: visibleOrders.length, pages: Math.ceil(visibleOrders.length / parsedLimit)
       },
       counts
     });
