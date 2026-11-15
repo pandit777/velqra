@@ -42,12 +42,19 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    minify: 'esbuild', // ✅ esbuild use karein (no terser needed)
+    minify: 'oxc',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          axios: ['axios']
+        manualChunks(id) {
+          const modulePath = id.replace(/\\/g, '/');
+          if (modulePath.includes('/node_modules/react/') ||
+              modulePath.includes('/node_modules/react-dom/') ||
+              modulePath.includes('/node_modules/react-router')) {
+            return 'vendor';
+          }
+          if (modulePath.includes('/node_modules/axios/')) {
+            return 'axios';
+          }
         }
       }
     },

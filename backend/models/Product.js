@@ -21,7 +21,7 @@ const Product = {
         original_price: productData.original_price,
         discount_percent: productData.discount_percent || 0,
         category: productData.category,
-        stock: productData.stock || 10,
+        stock: productData.stock ?? 10,
         description: productData.description || '',
         image: productData.image || '',
         image_url: productData.image_url || '',

@@ -1,7 +1,7 @@
 {
   "name": "atelimarket-backend",
   "version": "4.0.0",
-  "description": "AteliMarket Backend with Supabase + Resend",
+  "description": "AteliMarket Backend with Supabase",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -17,10 +17,9 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.5.0",
     "pdfkit": "^0.20.2",
-    "resend": "^3.0.0",
     "ws": "^8.14.2"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "3.1.11"
   }
 }

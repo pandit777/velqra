@@ -24,7 +24,7 @@ router.get('/', async (req, res) => {
       originalPrice: product.original_price,
       discountPercent: product.discount_percent || 0,
       category: product.category,
-      stock: product.stock || 10,
+      stock: product.stock ?? 10,
       description: product.description || '',
       image: product.image || '',
       imageUrl: product.image_url || '',
@@ -82,7 +82,7 @@ router.get('/:id', async (req, res) => {
       originalPrice: product.original_price,
       discountPercent: product.discount_percent || 0,
       category: product.category,
-      stock: product.stock || 10,
+      stock: product.stock ?? 10,
       description: product.description || '',
       image: product.image || '',
       imageUrl: product.image_url || '',
@@ -167,6 +167,16 @@ router.post('/add', async (req, res) => {
       });
     }
 
+    const parsedStock = stock === undefined || stock === null || stock === ''
+      ? 10
+      : Number(stock);
+    if (!Number.isSafeInteger(parsedStock) || parsedStock < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Stock must be a non-negative whole number'
+      });
+    }
+
     let finalPrice = parseFloat(originalPrice);
     const discount = parseFloat(discountPercent) || 0;
     
@@ -202,7 +212,7 @@ router.post('/add', async (req, res) => {
       price: Math.round(finalPrice),
       discount_percent: discount,
       category: category || 'Groceries',
-      stock: parseInt(stock) || 10,
+      stock: parsedStock,
       description: description || '',
       icon: icon || '📦',
       image: imageUrl.trim(),
@@ -233,7 +243,7 @@ router.post('/add', async (req, res) => {
         originalPrice: product.original_price,
         discountPercent: product.discount_percent || 0,
         category: product.category,
-        stock: product.stock || 10,
+        stock: product.stock ?? 10,
         description: product.description || '',
         image: product.image || '',
         imageUrl: product.image_url || '',
@@ -288,7 +298,18 @@ router.put('/update/:id', async (req, res) => {
         (origPrice * (updateData.discount_percent / 100)));
     }
     if (updates.category) updateData.category = updates.category.trim();
-    if (updates.stock !== undefined) updateData.stock = parseInt(updates.stock);
+    if (updates.stock !== undefined) {
+      const stock = updates.stock === null || updates.stock === ''
+        ? NaN
+        : Number(updates.stock);
+      if (!Number.isSafeInteger(stock) || stock < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Stock must be a non-negative whole number'
+        });
+      }
+      updateData.stock = stock;
+    }
     if (updates.description !== undefined) updateData.description = updates.description;
     if (updates.icon) updateData.icon = updates.icon;
     if (updates.imageUrl !== undefined) {
@@ -337,7 +358,7 @@ router.put('/update/:id', async (req, res) => {
         originalPrice: product.original_price,
         discountPercent: product.discount_percent || 0,
         category: product.category,
-        stock: product.stock || 10,
+        stock: product.stock ?? 10,
         description: product.description || '',
         image: product.image || '',
         imageUrl: product.image_url || '',

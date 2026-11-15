@@ -421,6 +421,24 @@ const uploadVideo = multer({
     cb(error);
   }
 });
+const allowedReviewImageTypes = new Map([
+  ['image/jpeg', '.jpg'],
+  ['image/png', '.png'],
+  ['image/webp', '.webp']
+]);
+const uploadReviewImage = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, reviewsDir),
+    filename: (req, file, cb) => cb(null, `review_${crypto.randomUUID()}${allowedReviewImageTypes.get(file.mimetype)}`)
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (allowedReviewImageTypes.has(file.mimetype)) return cb(null, true);
+    const error = new Error('Only JPG, PNG, and WebP review photos are allowed');
+    error.status = 400;
+    cb(error);
+  }
+});
 const productVideoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -597,7 +615,7 @@ const formatProduct = (product) => {
     name: product.name || 'Product', price: product.price || 0,
     originalPrice: product.original_price || 0,
     discountPercent: product.discount_percent || 0,
-    category: product.category || 'Uncategorized', stock: product.stock || 10,
+    category: product.category || 'Uncategorized', stock: product.stock ?? 10,
     description: product.description || '',
     image: product.image || '', imageUrl: product.image_url || '',
     images: product.images || [], brand: product.brand || '',
@@ -1433,7 +1451,7 @@ app.post('/api/products/add', requireAdmin, async (req, res) => {
     const parsedStock = stock === undefined || stock === null || stock === '' ? 10 : Number(stock);
     if (!Number.isFinite(parsedOriginalPrice) || parsedOriginalPrice <= 0 ||
       !Number.isFinite(discount) || discount < 0 || discount > 100 ||
-      !Number.isInteger(parsedStock) || parsedStock < 0) {
+      !Number.isSafeInteger(parsedStock) || parsedStock < 0) {
       return res.status(400).json({
         success: false,
         message: 'Price, discount, or stock value is invalid'
@@ -1520,7 +1538,18 @@ app.put('/api/products/update/:id', requireAdmin, async (req, res) => {
       updateData.price = Math.round(orig - (orig * (updateData.discount_percent / 100)));
     }
     if (updates.category) updateData.category = updates.category.trim();
-    if (updates.stock !== undefined) updateData.stock = parseInt(updates.stock);
+    if (updates.stock !== undefined) {
+      const stock = updates.stock === null || updates.stock === ''
+        ? NaN
+        : Number(updates.stock);
+      if (!Number.isSafeInteger(stock) || stock < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Stock must be a non-negative whole number'
+        });
+      }
+      updateData.stock = stock;
+    }
     if (updates.description !== undefined) updateData.description = updates.description;
     if (updates.icon) updateData.icon = updates.icon;
     if (updates.imageUrl !== undefined) {
@@ -1574,85 +1603,171 @@ app.delete('/api/products/delete/:id', requireAdmin, async (req, res) => {
 // =============================================
 // PRODUCT REVIEWS
 // =============================================
-app.post('/api/products/:id/reviews', requireAuth, uploadVideo.single('video'), async (req, res) => {
+const findDeliveredOrderForReview = async (userId, productId) => {
+  const { data: orders, error } = await supabase.from('orders')
+    .select('id, status, status_history, items')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+
+  return (orders || []).find(order => {
+    const wasDelivered = order.status === 'Delivered' ||
+      (Array.isArray(order.status_history) &&
+        order.status_history.some(entry => entry?.status === 'Delivered'));
+    const containsProduct = Array.isArray(order.items) &&
+      order.items.some(item => String(
+        item.product_id || item.productId || item._id || item.id || ''
+      ) === String(productId));
+    return wasDelivered && containsProduct;
+  }) || null;
+};
+
+const discardReviewImage = (file) => {
+  if (file?.path) {
+    fs.unlink(file.path, error => {
+      if (error && error.code !== 'ENOENT') console.error('Review photo cleanup failed:', error);
+    });
+  }
+};
+const isMissingReviewPhotoSchema = (error) =>
+  ['PGRST204', '42703'].includes(error?.code) &&
+  /image_url|image_path/i.test(error?.message || '');
+const reviewPhotoMigrationMessage =
+  'Review photo database migration is missing. Apply 20261115000000_add_product_review_photos.sql in Supabase.';
+const productReviewPageCache = new Map();
+const PRODUCT_REVIEW_CACHE_TTL_MS = 30000;
+
+const invalidateProductReviewCache = (productId) => {
+  const keyPrefix = `${productId}:`;
+  for (const key of productReviewPageCache.keys()) {
+    if (key.startsWith(keyPrefix)) productReviewPageCache.delete(key);
+  }
+};
+
+app.get('/api/products/:id/reviews/eligibility', requireAuth, async (req, res) => {
+  try {
+    const { data: product, error: productError } = await supabase.from('products')
+      .select('id').eq('id', req.params.id).maybeSingle();
+    if (productError) throw productError;
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    const [{ data: existingReview, error: reviewError }, deliveredOrder] = await Promise.all([
+      supabase.from('product_reviews')
+        .select('id').eq('product_id', req.params.id).eq('user_id', req.userId).limit(1).maybeSingle(),
+      findDeliveredOrderForReview(req.userId, req.params.id)
+    ]);
+    if (reviewError) throw reviewError;
+
+    res.json({
+      success: true,
+      canReview: Boolean(deliveredOrder && !existingReview),
+      alreadyReviewed: Boolean(existingReview)
+    });
+  } catch (error) {
+    console.error('Review eligibility check failed:', error);
+    res.status(500).json({ success: false, message: 'Could not verify review eligibility' });
+  }
+});
+
+app.post('/api/products/:id/reviews', requireAuth, uploadReviewImage.single('image'), async (req, res) => {
+  let reviewSaved = false;
   try {
     const productId = req.params.id;
     const userId = req.userId;
-    const { rating, reviewText, orderId } = req.body;
+    const { rating, reviewText } = req.body;
+    const parsedRating = Number(rating);
+    const cleanReviewText = typeof reviewText === 'string' ? reviewText.trim() : '';
 
-    if (!rating || rating < 1 || rating > 5) {
+    if (!Number.isInteger(parsedRating) || parsedRating < 1 || parsedRating > 5) {
+      discardReviewImage(req.file);
       return res.status(400).json({ success: false, message: 'Rating 1-5 required' });
+    }
+    if (cleanReviewText.length > 2000) {
+      discardReviewImage(req.file);
+      return res.status(400).json({ success: false, message: 'Review must be 2000 characters or fewer' });
     }
 
     const { data: product } = await supabase.from('products').select('id').eq('id', productId).single();
-    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    if (!product) {
+      discardReviewImage(req.file);
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
 
     const { data: user } = await supabase.from('users').select('name, email').eq('id', userId).single();
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    let isVerified = false;
-    if (orderId) {
-      const { data: order } = await supabase.from('orders')
-        .select('id, status, items, user_id').eq('id', orderId).single();
-
-      if (order && order.user_id === userId && order.status === 'Delivered' &&
-          (order.items || []).some(i => i.product_id === productId)) {
-        isVerified = true;
-      }
+    if (!user) {
+      discardReviewImage(req.file);
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    let videoUrl = null;
-    let videoPath = null;
-    if (req.file) {
-      videoPath = `/uploads/reviews/${req.file.filename}`;
-      videoUrl = videoPath;
+    const { data: existingReview, error: existingReviewError } = await supabase.from('product_reviews')
+      .select('id').eq('product_id', productId).eq('user_id', userId).limit(1).maybeSingle();
+    if (existingReviewError) throw existingReviewError;
+    if (existingReview) {
+      discardReviewImage(req.file);
+      return res.status(409).json({ success: false, message: 'You have already reviewed this product' });
     }
 
+    const deliveredOrder = await findDeliveredOrderForReview(userId, productId);
+    if (!deliveredOrder) {
+      discardReviewImage(req.file);
+      return res.status(403).json({ success: false, message: 'You can review this product after it is delivered' });
+    }
+
+    const imagePath = req.file ? `/uploads/reviews/${req.file.filename}` : null;
     const { data: review, error: reviewError } = await supabase.from('product_reviews').insert({
       product_id: productId, user_id: userId,
       user_name: user.name || 'User', user_email: user.email,
-      order_id: orderId || null, rating: parseInt(rating),
-      review_text: reviewText || '', video_url: videoUrl, video_path: videoPath,
-      is_verified_purchase: isVerified, created_at: new Date().toISOString()
-    }).select().single();
+      order_id: deliveredOrder.id, rating: parsedRating,
+      review_text: cleanReviewText,
+      image_url: imagePath, image_path: imagePath,
+      is_verified_purchase: true, created_at: new Date().toISOString()
+    }).select('id, product_id, user_id, user_name, rating, review_text, image_url, is_verified_purchase, created_at').single();
 
     if (reviewError) {
+      discardReviewImage(req.file);
       console.error('Review insert error:', reviewError);
-      return res.status(500).json({ success: false, message: 'Failed to save review' });
+      return res.status(500).json({
+        success: false,
+        message: isMissingReviewPhotoSchema(reviewError)
+          ? reviewPhotoMigrationMessage
+          : 'Failed to save review'
+      });
     }
+    reviewSaved = true;
+    invalidateProductReviewCache(productId);
 
-    const { data: allReviews } = await supabase.from('product_reviews')
-      .select('id, video_path, created_at')
-      .eq('product_id', productId)
-      .order('created_at', { ascending: false });
-
-    if (allReviews && allReviews.length > 10) {
-      const toDelete = allReviews.slice(10);
-      for (const old of toDelete) {
-        if (old.video_path) {
-          const fullPath = path.join(__dirname, old.video_path.replace('/uploads/', 'uploads/'));
-          if (fs.existsSync(fullPath)) {
-            try { fs.unlinkSync(fullPath); } catch (e) { console.error('File delete error:', e); }
-          }
-        }
-        await supabase.from('product_reviews').delete().eq('id', old.id);
-      }
-      console.log(`🧹 Auto-deleted ${toDelete.length} old reviews for product ${productId}`);
-    }
-
-    const { data: agg } = await supabase.from('product_reviews')
+    const { data: agg, error: aggregateError } = await supabase.from('product_reviews')
       .select('rating').eq('product_id', productId);
-
-    if (agg && agg.length > 0) {
-      const avgRating = agg.reduce((s, r) => s + r.rating, 0) / agg.length;
-      await supabase.from('products').update({
-        rating: Math.round(avgRating * 10) / 10,
-        reviews_count: agg.length
-      }).eq('id', productId);
+    if (aggregateError) {
+      console.error('Review aggregate refresh failed:', aggregateError);
+      return res.status(201).json({
+        success: true, message: 'Review saved; product rating could not be refreshed',
+        review, rating: null, reviewsCount: null
+      });
     }
 
-    res.status(201).json({ success: true, message: 'Review added', review });
+    const avgRating = agg.length
+      ? Math.round((agg.reduce((sum, item) => sum + Number(item.rating), 0) / agg.length) * 10) / 10
+      : 0;
+    const { error: productUpdateError } = await supabase.from('products').update({
+      rating: avgRating,
+      reviews_count: agg.length
+    }).eq('id', productId);
+    if (productUpdateError) {
+      console.error('Product review summary update failed:', productUpdateError);
+      return res.status(201).json({
+        success: true, message: 'Review saved; product rating could not be refreshed',
+        review, rating: null, reviewsCount: null
+      });
+    }
+
+    res.status(201).json({
+      success: true, message: 'Review added', review,
+      rating: avgRating, reviewsCount: agg.length
+    });
   } catch (error) {
+    if (!reviewSaved) discardReviewImage(req.file);
     console.error('Review error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
@@ -1660,21 +1775,58 @@ app.post('/api/products/:id/reviews', requireAuth, uploadVideo.single('video'), 
 
 app.get('/api/products/:id/reviews', async (req, res) => {
   try {
-    const { data: reviews, error } = await supabase.from('product_reviews')
-      .select('*')
+    const requestedLimit = Number(req.query.limit);
+    const requestedOffset = Number(req.query.offset);
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 20)
+      : 10;
+    const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0
+      ? Math.min(requestedOffset, 1000000)
+      : 0;
+    const cacheKey = `${req.params.id}:${limit}:${offset}`;
+    const cachedPage = productReviewPageCache.get(cacheKey);
+    if (cachedPage && cachedPage.expiresAt > Date.now()) {
+      return res.json(cachedPage.body);
+    }
+    if (cachedPage) productReviewPageCache.delete(cacheKey);
+
+    const { data: page, error } = await supabase.from('product_reviews')
+      .select('id, product_id, user_name, rating, review_text, image_url, is_verified_purchase, created_at')
       .eq('product_id', req.params.id)
       .order('created_at', { ascending: false })
-      .limit(10);
+      .order('id', { ascending: false })
+      .range(offset, offset + limit);
 
-    if (error) return res.status(500).json({ success: false, message: 'Error' });
+    if (error) {
+      console.error('Reviews fetch failed:', error);
+      return res.status(500).json({
+        success: false,
+        message: isMissingReviewPhotoSchema(error)
+          ? reviewPhotoMigrationMessage
+          : 'Could not load reviews'
+      });
+    }
+    const hasMore = (page || []).length > limit;
+    const reviews = (page || []).slice(0, limit);
 
-    const formatted = (reviews || []).map(r => ({
-      ...r,
-      videoUrl: r.video_url || null
-    }));
-
-    res.json({ success: true, reviews: formatted, total: formatted.length });
+    const body = {
+      success: true,
+      reviews: (reviews || []).map(review => ({ ...review, imageUrl: review.image_url || null })),
+      limit,
+      offset,
+      hasMore
+    };
+    if (productReviewPageCache.size >= 500) {
+      const oldestKey = productReviewPageCache.keys().next().value;
+      if (oldestKey) productReviewPageCache.delete(oldestKey);
+    }
+    productReviewPageCache.set(cacheKey, {
+      body,
+      expiresAt: Date.now() + PRODUCT_REVIEW_CACHE_TTL_MS
+    });
+    res.json(body);
   } catch (error) {
+    console.error('Reviews fetch failed:', error);
     res.status(500).json({ success: false, message: 'Error' });
   }
 });
@@ -3680,7 +3832,11 @@ app.use((err, req, res, next) => {
   const status = Number(err.status) || 500;
   if (status >= 500) console.error('Unhandled request error:', err.code || err.message);
   if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({ success: false, message: 'Video too large (max 50MB)' });
+    const isReviewPhoto = /^\/api\/products\/[^/]+\/reviews$/.test(req.path);
+    return res.status(400).json({
+      success: false,
+      message: isReviewPhoto ? 'Review photo too large (max 5MB)' : 'Video too large (max 50MB)'
+    });
   }
   res.status(err.status || 500).json({
     success: false,

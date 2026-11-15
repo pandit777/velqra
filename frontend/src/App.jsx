@@ -13,6 +13,7 @@ import {
 } from './i18n/localization';
 import LocaleControls from './i18n/LocaleControls';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
+import ProductReviewsModal, { getDemoReviewSummary, ReviewStars } from './components/ProductReviewsModal';
 import banner1 from './assets/banner1.png';
 import banner2 from './assets/banner2.png';
 import banner3 from './assets/banner3.png';
@@ -110,22 +111,32 @@ const getCartItemKey = (item) => JSON.stringify([
   String(item.promoApplied || item.promo_applied ? item.promoCode || item.promo_code || '' : '').trim().toUpperCase()
 ]);
 
-const normalizeProduct = (product) => ({
-  ...product,
-  _id: product._id || product.id,
-  originalPrice: Number(product.originalPrice ?? product.original_price ?? product.price ?? 0),
-  discountPercent: Number(product.discountPercent ?? product.discount_percent ?? 0),
-  price: Number(
-    product.price ??
-    Number(product.original_price ?? product.originalPrice ?? 0) *
-      (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100)
-  ),
-  promoCode: product.promoCode || product.promo_code || '',
-  promoDiscount: Number(product.promoDiscount ?? product.promo_discount ?? 0),
-  imageUrl: product.imageUrl || product.image_url || '',
-  videoUrl: product.videoUrl || product.video_url || '',
-  videoType: product.videoType || product.video_type || 'youtube'
-});
+const normalizeProduct = (product) => {
+  const rawStock = product.stock;
+  const stock = rawStock === undefined || rawStock === null || rawStock === ''
+    ? 10
+    : Number(rawStock);
+
+  return {
+    ...product,
+    _id: product._id || product.id,
+    stock: Number.isSafeInteger(stock) && stock >= 0 ? stock : 0,
+    rating: Number(product.rating ?? 0),
+    reviewsCount: Number(product.reviewsCount ?? product.reviews_count ?? 0),
+    originalPrice: Number(product.originalPrice ?? product.original_price ?? product.price ?? 0),
+    discountPercent: Number(product.discountPercent ?? product.discount_percent ?? 0),
+    price: Number(
+      product.price ??
+      Number(product.original_price ?? product.originalPrice ?? 0) *
+        (1 - Number(product.discountPercent ?? product.discount_percent ?? 0) / 100)
+    ),
+    promoCode: product.promoCode || product.promo_code || '',
+    promoDiscount: Number(product.promoDiscount ?? product.promo_discount ?? 0),
+    imageUrl: product.imageUrl || product.image_url || '',
+    videoUrl: product.videoUrl || product.video_url || '',
+    videoType: product.videoType || product.video_type || 'youtube'
+  };
+};
 
 // =============================================
 // Helper Functions
@@ -1515,7 +1526,7 @@ const AboutPage = () => (
 // =============================================
 // PRODUCT DETAIL PAGE - WITH VIDEO & ATTRIBUTES
 // =============================================
-const ProductDetailPage = ({ addToCart, openCheckout }) => {
+const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSummaryUpdated }) => {
   const { t, formatCurrency } = useLocalization();
   const { id } = useParams();
   const [product, setProduct] = useState(null);
@@ -1651,6 +1662,18 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
     }));
   };
 
+  const handleReviewSummaryUpdate = (productId, summary) => {
+    if (summary.rating !== null && summary.reviewsCount !== null) {
+      setProduct(currentProduct => currentProduct ? {
+        ...currentProduct,
+        rating: summary.rating,
+        reviewsCount: summary.reviewsCount,
+        reviews_count: summary.reviewsCount
+      } : currentProduct);
+    }
+    onReviewSummaryUpdated?.(productId, summary);
+  };
+
   const applyProductPromo = () => {
     if (!product?.promoCode) {
       return;
@@ -1687,6 +1710,10 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
   const images = (Array.isArray(product.images) ? product.images : []).filter(Boolean);
   if (images.length === 0) images.push(product.image || product.imageUrl || mainImage);
   const hasAttributes = product.attributes && Object.keys(product.attributes).length > 0;
+  const actualReviewsCount = Number(product.reviewsCount ?? product.reviews_count ?? 0);
+  const demoReviewSummary = getDemoReviewSummary(product);
+  const displayedRating = actualReviewsCount ? Number(product.rating || 0) : demoReviewSummary.rating;
+  const displayedReviewsCount = actualReviewsCount || demoReviewSummary.reviewsCount;
   const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
   const videoUrl = hasVideo && product.videoUrl.startsWith('/')
     ? `${BACKEND_ORIGIN}${product.videoUrl}`
@@ -1809,6 +1836,24 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
             {product.brand && (
               <p className="text-sm text-slate-500 mt-1">{t('Brand:')} <span className="font-medium">{product.brand}</span></p>
             )}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <ReviewStars value={displayedRating} />
+              <span className="text-sm font-bold text-slate-600">
+                {displayedRating ? displayedRating.toFixed(1) : t('No ratings')}
+              </span>
+              {demoReviewSummary.reviewsCount > 0 && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-amber-800">
+                  Demo
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => onOpenReviews?.(product)}
+                className="rounded-full border border-[#173b32] px-3 py-1 text-xs font-bold text-[#173b32] transition hover:bg-[#173b32] hover:text-white"
+              >
+                {t('All reviews')} ({displayedReviewsCount})
+              </button>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -1885,7 +1930,7 @@ const ProductDetailPage = ({ addToCart, openCheckout }) => {
               disabled={product.stock <= 0 || addingToCart}
               className="rounded-xl border border-[#173b32] bg-transparent py-3.5 text-sm font-bold uppercase tracking-wide text-[#173b32] transition hover:bg-[#173b32] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {t('Buy Now')}
+              {product.stock <= 0 ? t('Out of Stock') : t('Buy Now')}
             </button>
           </div>
 
@@ -2609,6 +2654,9 @@ export default function App() {
   const t = (key, values) => translate(language, key, values);
   const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
+  const [activeReviewsProduct, setActiveReviewsProduct] = useState(null);
+  const [productStockDrafts, setProductStockDrafts] = useState({});
+  const [stockUpdatingId, setStockUpdatingId] = useState(null);
   const [cart, setCart] = useState([]);
   const cartMutationQueue = useRef(Promise.resolve());
   const cartOpenRef = useRef(false);
@@ -2866,6 +2914,24 @@ export default function App() {
   const [returnsLoading, setReturnsLoading] = useState(false);
   const [verifyingPaymentId, setVerifyingPaymentId] = useState(null);
   const [updatingReturnId, setUpdatingReturnId] = useState(null);
+
+  const updateProductReviewSummary = (productId, summary) => {
+    if (summary.rating === null || summary.reviewsCount === null) return;
+    setProducts(currentProducts => {
+      const updatedProducts = currentProducts.map(product =>
+        String(product._id || product.id) === String(productId)
+          ? {
+              ...product,
+              rating: summary.rating,
+              reviewsCount: summary.reviewsCount,
+              reviews_count: summary.reviewsCount
+            }
+          : product
+      );
+      localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(updatedProducts));
+      return updatedProducts;
+    });
+  };
 
   // Product Management States
   const [newProdName, setNewProdName] = useState('');
@@ -3994,6 +4060,11 @@ export default function App() {
       showToast('Enter both a promo code and a discount between 1% and 100%.', 'error');
       return;
     }
+    const stock = newProdStock.trim() === '' ? 10 : Number(newProdStock);
+    if (!Number.isSafeInteger(stock) || stock < 0) {
+      showToast('Stock must be a non-negative whole number.', 'error');
+      return;
+    }
 
     const productData = {
       name: newProdName,
@@ -4001,7 +4072,7 @@ export default function App() {
       discountPercent: parseFloat(newProdDiscount) || 0,
       category: newProdCategory,
       icon: newProdIcon,
-      stock: parseInt(newProdStock) || 10,
+      stock,
       description: newProdDescription,
       brand: newProdBrand,
       weight: newProdWeight || null,
@@ -4078,6 +4149,52 @@ export default function App() {
       } finally {
         setLoading(false);
       }
+    }
+  };
+
+  const handleUpdateProductStock = async (product) => {
+    const rawStock = productStockDrafts[product._id] ?? product.stock;
+    const stock = rawStock === '' ? NaN : Number(rawStock);
+    if (!Number.isSafeInteger(stock) || stock < 0) {
+      showToast('Stock must be a non-negative whole number.', 'error');
+      return;
+    }
+
+    setStockUpdatingId(product._id);
+    try {
+      const token = sessionStorage.getItem('velqra_token');
+      const { data } = await axios.put(
+        `${API_URL}/products/update/${product._id}`,
+        { stock },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!data.success || !data.product) {
+        throw new Error(data.message || 'Failed to update product stock.');
+      }
+
+      const updatedProduct = normalizeProduct(data.product);
+      setProducts(currentProducts => {
+        const updatedProducts = currentProducts.map(currentProduct =>
+          currentProduct._id === product._id
+            ? { ...currentProduct, ...updatedProduct }
+            : currentProduct
+        );
+        localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(updatedProducts));
+        return updatedProducts;
+      });
+      setProductStockDrafts(currentDrafts => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[product._id];
+        return nextDrafts;
+      });
+      showToast(stock === 0 ? 'Product is now out of stock.' : 'Product stock updated.', 'success');
+    } catch (stockError) {
+      showToast(
+        stockError.response?.data?.message || stockError.message || 'Failed to update product stock.',
+        'error'
+      );
+    } finally {
+      setStockUpdatingId(null);
     }
   };
 
@@ -4756,34 +4873,67 @@ export default function App() {
                             const price = Number(product.price || 0);
                             const originalPrice = Number(product.originalPrice || price);
                             const discount = Number(product.discountPercent || 0);
+                            const actualReviewsCount = Number(product.reviewsCount ?? product.reviews_count ?? 0);
+                            const demoReviewSummary = getDemoReviewSummary(product);
+                            const rating = actualReviewsCount ? Number(product.rating || 0) : demoReviewSummary.rating;
+                            const reviewsCount = actualReviewsCount || demoReviewSummary.reviewsCount;
                             return (
-                              <Link key={product._id} to={`/product/${product._id}`} className="velqra-product-grid-card group">
-                                <div className="relative">
-                                  {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
-                                  {product.videoType === 'uploaded' && product.videoUrl ? (
-                                    <video
-                                      src={product.videoUrl}
-                                      autoPlay
-                                      muted
-                                      loop
-                                      playsInline
-                                      preload="metadata"
-                                      aria-label={`${product.name} demo video`}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
-                                  )}
-                                </div>
-                                <div className="p-3 sm:p-5">
-                                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8a8a82]">{product.category || 'Botanical'}</p>
-                                  <h2 className="mt-2 min-h-[44px] font-serif text-base sm:text-xl leading-tight text-[#1d1d1b]">{product.name}</h2>
-                                  <div className="mt-4 flex items-baseline gap-2">
-                                    <strong className="text-base sm:text-lg text-[#173b32]">{formatPrice(price)}</strong>
-                                    {originalPrice > price && <span className="text-xs text-[#999] line-through">{formatPrice(originalPrice)}</span>}
+                              <div key={product._id} className="velqra-product-grid-card group">
+                                <Link to={`/product/${product._id}`} className="block">
+                                  <div className="relative">
+                                    {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
+                                    {product.videoType === 'uploaded' && product.videoUrl ? (
+                                      <video
+                                        src={product.videoUrl}
+                                        autoPlay
+                                        muted
+                                        loop
+                                        playsInline
+                                        preload="metadata"
+                                        aria-label={`${product.name} demo video`}
+                                        className="h-full w-full object-cover"
+                                      />
+                                    ) : (
+                                      <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
+                                    )}
+                                    {product.stock <= 0 && (
+                                      <div
+                                        role="status"
+                                        aria-label={t('Out of Stock')}
+                                        className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/35"
+                                      >
+                                        <span className="rounded-full bg-red-700 px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-lg sm:text-sm">
+                                          {t('Out of Stock')}
+                                        </span>
+                                      </div>
+                                    )}
                                   </div>
+                                  <div className="p-3 sm:p-5">
+                                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8a8a82]">{product.category || 'Botanical'}</p>
+                                    <h2 className="mt-2 min-h-[44px] font-serif text-base sm:text-xl leading-tight text-[#1d1d1b]">{product.name}</h2>
+                                    <div className="mt-4 flex items-baseline gap-2">
+                                      <strong className="text-base sm:text-lg text-[#173b32]">{formatPrice(price)}</strong>
+                                      {originalPrice > price && <span className="text-xs text-[#999] line-through">{formatPrice(originalPrice)}</span>}
+                                    </div>
+                                  </div>
+                                </Link>
+                                <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-3 py-3 sm:px-5">
+                                  <div className="flex min-w-0 items-center gap-1.5">
+                                    <ReviewStars value={rating} size="text-sm" />
+                                    <span className="text-xs font-bold text-slate-600">{rating ? rating.toFixed(1) : '—'}</span>
+                                    {demoReviewSummary.reviewsCount > 0 && (
+                                      <span className="text-[9px] font-black uppercase tracking-wide text-amber-700">Demo</span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveReviewsProduct(product)}
+                                    className="shrink-0 rounded-full border border-[#173b32] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-[#173b32] transition hover:bg-[#173b32] hover:text-white"
+                                  >
+                                    {t('All reviews')} ({reviewsCount})
+                                  </button>
                                 </div>
-                              </Link>
+                              </div>
                             );
                           })}
                         </div>
@@ -4795,10 +4945,15 @@ export default function App() {
             </>
           } />
 
-          <Route path="/product/:id" element={<ProductDetailPage addToCart={addToCart} openCheckout={() => {
-            openCart();
-            setCheckoutOpen(true);
-          }} />} />
+          <Route path="/product/:id" element={<ProductDetailPage
+            addToCart={addToCart}
+            openCheckout={() => {
+              openCart();
+              setCheckoutOpen(true);
+            }}
+            onOpenReviews={setActiveReviewsProduct}
+            onReviewSummaryUpdated={updateProductReviewSummary}
+          />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/privacy-policy" element={<PolicyPage policy="privacy" />} />
           <Route path="/terms-policy" element={<PolicyPage policy="terms" />} />
@@ -5261,7 +5416,7 @@ export default function App() {
                               <th className="py-3 px-4">Product</th>
                               <th className="py-3 px-4 hidden sm:table-cell">Category</th>
                               <th className="py-3 px-4">Price</th>
-                              <th className="py-3 px-4 hidden md:table-cell">Stock</th>
+                              <th className="py-3 px-4">Stock</th>
                               <th className="py-3 px-4 text-right">Action</th>
                             </tr>
                           </thead>
@@ -5311,10 +5466,32 @@ export default function App() {
                                       )}
                                     </div>
                                   </td>
-                                  <td className="py-3 px-4 hidden md:table-cell">
-                                    <span className={`text-xs font-bold ${product.stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                                      {product.stock > 0 ? product.stock : 'Out'}
-                                    </span>
+                                  <td className="py-3 px-4">
+                                    <div className="flex min-w-[190px] items-center gap-2">
+                                      <span className={`text-xs font-bold ${product.stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                        {product.stock > 0 ? product.stock : t('Out of Stock')}
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        aria-label={`Stock for ${product.name}`}
+                                        value={productStockDrafts[product._id] ?? String(product.stock)}
+                                        onChange={event => setProductStockDrafts(currentDrafts => ({
+                                          ...currentDrafts,
+                                          [product._id]: event.target.value
+                                        }))}
+                                        className="w-20 rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-800"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateProductStock(product)}
+                                        disabled={stockUpdatingId === product._id}
+                                        className="rounded-lg bg-[#0B3C5D] px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-[#07263b] disabled:opacity-50"
+                                      >
+                                        {stockUpdatingId === product._id ? 'Saving...' : 'Save'}
+                                      </button>
+                                    </div>
                                   </td>
                                   <td className="py-3 px-4 text-right">
                                     <button
@@ -5341,6 +5518,15 @@ export default function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </div>
+      )}
+
+      {activeReviewsProduct && (
+        <ProductReviewsModal
+          product={activeReviewsProduct}
+          onClose={() => setActiveReviewsProduct(null)}
+          onLoginRequest={() => openUserAuth('login')}
+          onReviewsUpdated={updateProductReviewSummary}
+        />
       )}
 
       {/* USER AUTH MODAL */}
