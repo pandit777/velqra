@@ -23,7 +23,7 @@ import velqraLogo from './assets/velqra-logo.png';
 // =============================================
 const API_URL = import.meta.env.PROD
   ? '/api'
-  : (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+  : (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 const BACKEND_ORIGIN = import.meta.env.PROD ? '' : API_URL.replace(/\/api$/, '');
 const AUTH_URL = `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
@@ -1974,6 +1974,8 @@ const OrdersPage = ({ onLoginRequest }) => {
   const [error, setError] = useState('');
   const [invoiceLoadingId, setInvoiceLoadingId] = useState(null);
   const [returnModalOrder, setReturnModalOrder] = useState(null);
+  const [paymentCheckingId, setPaymentCheckingId] = useState(null);
+  const [pendingPaymentTxnId, setPendingPaymentTxnId] = useState('');
 
   const fetchOrders = async () => {
     try {
@@ -1997,6 +1999,55 @@ const OrdersPage = ({ onLoginRequest }) => {
       setError('Failed to fetch orders');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePaymentStatusCheck = async (orderId, automatic = false) => {
+    const token = sessionStorage.getItem('velqra_user_token');
+    if (!token) {
+      onLoginRequest();
+      return;
+    }
+
+    setPaymentCheckingId(orderId);
+    try {
+      const attempts = automatic ? 8 : 1;
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const { data } = await axios.post(
+          `${API_URL}/orders/${orderId}/refresh-payment`,
+          {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!data.success || !data.order) {
+          throw new Error(data.message || 'Unable to refresh payment status');
+        }
+
+        setOrders(current => current.map(order =>
+          order._id === orderId ? data.order : order
+        ));
+
+        if (data.verified) {
+          window.alert('✅ PayU confirmed your payment. Your order status is updated.');
+          return;
+        }
+        if (data.order.status !== 'Payment Verification Pending') {
+          if (!automatic) {
+            window.alert(data.order.status === 'Payment Failed'
+              ? 'PayU reports that this payment failed. You can retry from the order.'
+              : `Payment status: ${data.order.status}`);
+          }
+          return;
+        }
+        if (attempt < attempts - 1) {
+          await new Promise(resolve => window.setTimeout(resolve, 5000));
+        }
+      }
+
+      window.alert('⏳ PayU is still confirming the payment. You can check again from My Orders.');
+    } catch (checkError) {
+      window.alert(checkError.response?.data?.message || checkError.message || 'Unable to refresh payment status');
+    } finally {
+      setPaymentCheckingId(null);
     }
   };
 
@@ -2028,10 +2079,21 @@ const OrdersPage = ({ onLoginRequest }) => {
       fetchOrders();
     } else if (paymentStatus === 'pending') {
       alert('⏳ PayU is still confirming the payment. Your order will update after PayU confirms it.');
+      setPendingPaymentTxnId(params.get('txnid') || '');
       window.history.replaceState({}, '', '/orders');
       fetchOrders();
     }
   }, []);
+
+  useEffect(() => {
+    if (!pendingPaymentTxnId || loading) return;
+
+    const pendingOrder = orders.find(order => order.referenceId === pendingPaymentTxnId);
+    setPendingPaymentTxnId('');
+    if (pendingOrder?.status === 'Payment Verification Pending') {
+      void handlePaymentStatusCheck(pendingOrder._id, true);
+    }
+  }, [pendingPaymentTxnId, loading, orders]);
 
 
   const getStatusBadge = (status, paymentMethod) => {
@@ -2232,6 +2294,17 @@ const OrdersPage = ({ onLoginRequest }) => {
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {order.paymentMethod === 'online' &&
+                      order.status === 'Payment Verification Pending' && (
+                        <button
+                          type="button"
+                          onClick={() => handlePaymentStatusCheck(order._id)}
+                          disabled={paymentCheckingId === order._id}
+                          className="rounded-xl bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700 transition hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          {paymentCheckingId === order._id ? 'Checking payment...' : 'Check payment'}
+                        </button>
+                      )}
                     <Link to={`/orders/track/${order._id}`} className="bg-[#0B3C5D] text-white px-5 py-2 rounded-xl text-sm font-bold hover:bg-[#07263b] transition text-center whitespace-nowrap">
                       {t('Track Order')} →
                     </Link>
@@ -2715,6 +2788,13 @@ export default function App() {
     if (mode === 'register') setRegStep('form');
     navigate(mode === 'register' ? '/register' : '/login');
   };
+
+  useEffect(() => {
+    if (!isUserAuthPage) return;
+
+    setUserAuthMode(location.pathname === '/register' ? 'register' : 'login');
+    setIsAuthModalOpen(true);
+  }, [isUserAuthPage, location.pathname]);
 
   useEffect(() => {
     if (!isUserAuthPage) return undefined;
@@ -5946,6 +6026,22 @@ export default function App() {
             <a href="tel:+919050054177" className="mt-2 block text-xs text-neutral-400 hover:text-amber-400">
               +91 90500 54177
             </a>
+            <div className="mt-4 border-t border-neutral-800 pt-4">
+              <h5 className="mb-2 text-xs font-bold uppercase text-neutral-300">WEBSITE DEVELOPMENT</h5>
+              <p className="mb-2 text-xs text-neutral-400">Need a website for your business?</p>
+              <a
+                href="mailto:gs8901346287@gmail.com?subject=Website%20Development%20Inquiry"
+                className="inline-flex rounded-lg bg-amber-400 px-3 py-2 text-xs font-bold text-neutral-950 transition hover:bg-amber-300"
+              >
+                Email the developer
+              </a>
+              <a
+                href="tel:+918901346287"
+                className="mt-2 block text-xs text-neutral-400 transition hover:text-amber-400"
+              >
+                +91 89013 46287
+              </a>
+            </div>
           </div>
           <div>
             <h5 className="text-xs font-bold text-neutral-300 uppercase mb-3">LOCATION</h5>

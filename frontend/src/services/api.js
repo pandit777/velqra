@@ -4,7 +4,7 @@
 
 const API_URL = import.meta.env.PROD
   ? '/api'
-  : (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+  : (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 const AUTH_URL = `${API_URL}/auth`;
 
 export async function downloadOrderInvoice(orderId) {

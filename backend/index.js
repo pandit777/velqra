@@ -121,6 +121,11 @@ const apiRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 600 });
 const authRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
 const otpRequestRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 5 });
 const otpVerifyRateLimit = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
+const payuStatusRefreshRateLimit = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 12,
+  keyGenerator: req => `payu-status:${req.userId}:${req.params.id}`
+});
 const getOtpRateLimitIdentity = req => {
   const phone = String(req.body?.phone || '').replace(/\D/g, '').slice(-10);
   const identity = phone || String(req.body?.email || req.userId || req.body?.orderId || '')
@@ -2339,12 +2344,30 @@ const markPayuOrderVerified = async (order, transaction) => {
   return { order: updatedOrder };
 };
 
+const verifyAndUpdatePayuOrder = async (order) => {
+  if (isOnlinePaymentVerified(order)) return { verified: true, order };
+
+  const verification = await verifyPayuTransaction(order.reference_id);
+  if (!verification.captured ||
+      verification.amount.toFixed(2) !== Number(order.total).toFixed(2)) {
+    return { verified: false, order };
+  }
+
+  const confirmation = await markPayuOrderVerified(order, verification);
+  const confirmedOrder = confirmation.order || order;
+  return {
+    verified: isOnlinePaymentVerified(confirmedOrder),
+    order: confirmedOrder
+  };
+};
+
 /**
  * GET/POST /api/payment/payu/callback
  * PayU response is verified before redirecting back to the storefront.
  * Reverse hash and server-side transaction verification → order status update
  */
 const handlePayuCallback = async (req, res) => {
+  let callbackTxnId = '';
   try {
     const callbackData = req.method === 'GET' ? req.query : req.body;
     const {
@@ -2352,6 +2375,7 @@ const handlePayuCallback = async (req, res) => {
       firstname, email, hash, key: callbackKey, additionalCharges,
       udf1 = '', udf2 = '', udf3 = '', udf4 = '', udf5 = '',
     } = callbackData;
+    callbackTxnId = String(txnid || '');
 
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(txnid || '')) || !hash) {
       return res.redirect(`${frontendUrl}/orders?payment=failure&reason=missing_fields`);
@@ -2437,7 +2461,14 @@ const handlePayuCallback = async (req, res) => {
 
   } catch (err) {
     console.error('PayU callback processing failed:', err.message);
-    res.redirect(`${frontendUrl}/orders?payment=pending&reason=verification_unavailable`);
+    const pendingParams = new URLSearchParams({
+      payment: 'pending',
+      reason: 'verification_unavailable'
+    });
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(callbackTxnId)) {
+      pendingParams.set('txnid', callbackTxnId);
+    }
+    res.redirect(`${frontendUrl}/orders?${pendingParams.toString()}`);
   }
 };
 app.post('/api/payment/payu/callback', handlePayuCallback);
@@ -2908,11 +2939,10 @@ app.patch('/api/orders/:id/verify-payment', requireAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: `Cannot verify. Status: ${order.status}` });
     }
 
-    const verification = await verifyPayuTransaction(order.reference_id);
-    if (!verification.captured || verification.amount.toFixed(2) !== Number(order.total).toFixed(2)) {
+    const confirmation = await verifyAndUpdatePayuOrder(order);
+    if (!confirmation.verified) {
       return res.status(409).json({ success: false, message: 'PayU has not confirmed a captured payment for this order' });
     }
-    const confirmation = await markPayuOrderVerified(order, verification);
     if (!confirmation.order || !isOnlinePaymentVerified(confirmation.order)) {
       return res.status(409).json({ success: false, message: 'Payment status changed; refresh the order list' });
     }
@@ -2920,6 +2950,34 @@ app.patch('/api/orders/:id/verify-payment', requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('PayU admin verification failed:', error.message);
     res.status(502).json({ success: false, message: 'Unable to verify payment with PayU' });
+  }
+});
+
+app.post('/api/orders/:id/refresh-payment', requireAuth, payuStatusRefreshRateLimit, async (req, res) => {
+  try {
+    const { data: order, error } = await supabase.from('orders')
+      .select('*').eq('id', req.params.id).maybeSingle();
+    if (error) throw error;
+    if (!order || order.user_id !== req.userId) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (order.payment_method !== 'online' || !order.reference_id) {
+      return res.status(400).json({ success: false, message: 'PayU transaction not found for this order' });
+    }
+    if (order.status !== 'Payment Verification Pending' &&
+        !isOnlinePaymentVerified(order)) {
+      return res.json({ success: true, verified: false, order: formatOrder(order) });
+    }
+
+    const result = await verifyAndUpdatePayuOrder(order);
+    res.json({
+      success: true,
+      verified: result.verified,
+      order: formatOrder(result.order)
+    });
+  } catch (error) {
+    console.error('PayU customer payment refresh failed:', error.message);
+    res.status(502).json({ success: false, message: 'Unable to refresh payment status with PayU' });
   }
 });
 

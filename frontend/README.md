@@ -36,7 +36,7 @@ The storefront catalog includes product search and a simple two-option category 
 The storefront interface supports English, Hindi, Punjabi, Telugu, and Bengali. Customers can display prices in INR, USD, EUR, GBP, AED, CAD, AUD, SGD, JPY, or CNY; their language and currency preferences are saved in the browser. Foreign-currency display uses Frankfurter reference exchange rates, cached locally and refreshed every six hours, so rates can be delayed or temporarily unavailable. Unavailable conversions are shown explicitly.
 Currency selection is display-only: product and order amounts, checkout totals, payment processing, and downloadable receipts remain in INR. Product names and descriptions remain in the language supplied by the store.
 
-The frontend defaults to the local API at `http://localhost:5000/api`. Set `VITE_API_URL` (and, if needed, `VITE_AUTH_URL`) in `frontend/.env` to override it. Frontend Supabase variables are only needed for features that use the Supabase client directly; never put the backend service-role key in the frontend.
+The frontend defaults to the same-origin `/api` path. Vite proxies local development API and upload requests to `http://localhost:5000`; set `VITE_API_URL` in `frontend/.env` only when you need a different API origin. Frontend Supabase variables are only needed for features that use the Supabase client directly; never put the backend service-role key in the frontend.
 
 ## Security notes
 
