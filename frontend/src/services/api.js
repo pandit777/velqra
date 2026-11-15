@@ -2,9 +2,8 @@
 // API Service - Supabase Version
 // =============================================
 
-const API_URL = import.meta.env.PROD
-  ? '/api'
-  : (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
+import { API_BASE as API_URL } from '../config/app';
+
 const AUTH_URL = `${API_URL}/auth`;
 
 export async function downloadOrderInvoice(orderId) {

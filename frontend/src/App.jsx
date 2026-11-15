@@ -3,6 +3,7 @@ import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } fr
 import axios from 'axios';
 import { downloadOrderInvoice } from './services/api';
 import { captureTrafficAttribution, getTrafficAttribution } from './lib/trafficAttribution';
+import { API_BASE, BACKEND_ORIGIN } from './config/app';
 import {
   CURRENCY_OPTIONS,
   LANGUAGE_OPTIONS,
@@ -22,10 +23,7 @@ import velqraLogo from './assets/velqra-logo.png';
 // =============================================
 // API URLs - SECURE (Environment Variables)
 // =============================================
-const API_URL = import.meta.env.PROD
-  ? '/api'
-  : (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
-const BACKEND_ORIGIN = import.meta.env.PROD ? '' : API_URL.replace(/\/api$/, '');
+const API_URL = API_BASE;
 const AUTH_URL = `${API_URL}/auth`;
 const PRODUCTS_CACHE_KEY = 'velqra_products_cache';
 const EXCHANGE_RATES_CACHE_KEY = 'velqra_exchange_rates';
@@ -68,6 +66,14 @@ const getPayUPaymentUrl = (value) => {
     throw new Error('Invalid payment gateway URL');
   }
   return paymentUrl.href;
+};
+const requireLoginResponse = (data) => {
+  if (!data || typeof data !== 'object' || data.success !== true ||
+      typeof data.token !== 'string' || !data.token ||
+      !data.user || typeof data.user !== 'object') {
+    throw new Error(data?.message || 'The server returned an empty or invalid login response.');
+  }
+  return data;
 };
 
 const getCachedProducts = () => {
@@ -3743,29 +3749,28 @@ export default function App() {
         password: userPassword
       });
 
-      if (res.data.success) {
-        const userData = res.data.user;
-        await syncGuestCart(res.data.token, userData);
-        setCurrentUser(userData);
-        setIsUserLoggedIn(true);
-        sessionStorage.setItem('velqra_user', JSON.stringify(userData));
-        sessionStorage.setItem('velqra_user_token', res.data.token);
-        window.dispatchEvent(new Event('velqra-auth-change'));
-        if (userData.role === 'admin') {
-          setIsAdminLoggedIn(true);
-          sessionStorage.setItem('velqra_admin', 'true');
-          sessionStorage.setItem('velqra_token', res.data.token);
-          navigate('/admin');
-        } else {
-          navigate('/');
-        }
-        setUserEmail('');
-        setUserPassword('');
-        setIsAuthModalOpen(false);
-        showToast('✅ Login successful!', 'success');
+      const loginData = requireLoginResponse(res.data);
+      const userData = loginData.user;
+      await syncGuestCart(loginData.token, userData);
+      setCurrentUser(userData);
+      setIsUserLoggedIn(true);
+      sessionStorage.setItem('velqra_user', JSON.stringify(userData));
+      sessionStorage.setItem('velqra_user_token', loginData.token);
+      window.dispatchEvent(new Event('velqra-auth-change'));
+      if (userData.role === 'admin') {
+        setIsAdminLoggedIn(true);
+        sessionStorage.setItem('velqra_admin', 'true');
+        sessionStorage.setItem('velqra_token', loginData.token);
+        navigate('/admin');
+      } else {
+        navigate('/');
       }
+      setUserEmail('');
+      setUserPassword('');
+      setIsAuthModalOpen(false);
+      showToast('✅ Login successful!', 'success');
     } catch (err) {
-      const errorMsg = err.response?.data?.message || 'Login failed. Please try again.';
+      const errorMsg = err.response?.data?.message || err.message || 'Login failed. Please try again.';
       setError(errorMsg);
       showToast(errorMsg, 'error');
     } finally {
@@ -3791,37 +3796,35 @@ export default function App() {
     setAdminSetupError('');
     try {
       const res = await axios.post(`${AUTH_URL}/login`, { username: 'admin', password: loginPassword });
-      if (res.data.success) {
-        const userRole = res.data.user?.role;
-        if (userRole !== 'admin') {
-          setAdminSetupError('This account is not an admin account.');
-          setLoading(false);
-          return;
-        }
+      const loginData = requireLoginResponse(res.data);
+      const userRole = loginData.user?.role;
+      if (userRole !== 'admin') {
+        setAdminSetupError('This account is not an admin account.');
+        return;
+      }
 
-        setIsAdminLoggedIn(true);
-        await syncGuestCart(res.data.token, res.data.user);
-        sessionStorage.setItem('velqra_admin', 'true');
-        sessionStorage.setItem('velqra_token', res.data.token);
-        sessionStorage.setItem('velqra_user', JSON.stringify(res.data.user));
-        sessionStorage.setItem('velqra_user_token', res.data.token);
-        window.dispatchEvent(new Event('velqra-auth-change'));
-        setCurrentUser(res.data.user);
-        setIsUserLoggedIn(true);
-        setShowAdminAuth(false);
-        setLoginPassword('');
-        setAdminPasswordChangeRequired(Boolean(res.data.mustChangePassword));
-        setAdminSetupStatus(res.data.mustChangePassword ? 'required' : 'complete');
-        if (!res.data.mustChangePassword) {
-          localStorage.setItem(ADMIN_SETUP_CACHE_KEY, 'true');
-          navigate('/admin');
-          showToast('🚀 Welcome Admin!', 'success');
-        } else {
-          localStorage.removeItem(ADMIN_SETUP_CACHE_KEY);
-        }
+      setIsAdminLoggedIn(true);
+      await syncGuestCart(loginData.token, loginData.user);
+      sessionStorage.setItem('velqra_admin', 'true');
+      sessionStorage.setItem('velqra_token', loginData.token);
+      sessionStorage.setItem('velqra_user', JSON.stringify(loginData.user));
+      sessionStorage.setItem('velqra_user_token', loginData.token);
+      window.dispatchEvent(new Event('velqra-auth-change'));
+      setCurrentUser(loginData.user);
+      setIsUserLoggedIn(true);
+      setShowAdminAuth(false);
+      setLoginPassword('');
+      setAdminPasswordChangeRequired(Boolean(loginData.mustChangePassword));
+      setAdminSetupStatus(loginData.mustChangePassword ? 'required' : 'complete');
+      if (!loginData.mustChangePassword) {
+        localStorage.setItem(ADMIN_SETUP_CACHE_KEY, 'true');
+        navigate('/admin');
+        showToast('🚀 Welcome Admin!', 'success');
+      } else {
+        localStorage.removeItem(ADMIN_SETUP_CACHE_KEY);
       }
     } catch (err) {
-      const message = err.response?.data?.message || 'Login failed';
+      const message = err.response?.data?.message || err.message || 'Login failed';
       setAdminSetupError(message);
       if (adminSetupStatus === 'complete') showToast(message, 'error');
     } finally {

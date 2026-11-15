@@ -1,10 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { API_BASE as API_URL, BACKEND_ORIGIN } from '../config/app';
 
-const API_URL = import.meta.env.PROD
-  ? '/api'
-  : (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
-const BACKEND_ORIGIN = import.meta.env.PROD ? '' : API_URL.replace(/\/api$/, '');
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const REVIEW_CACHE_KEY_PREFIX = 'velqra_product_reviews_';
