@@ -359,6 +359,23 @@ body {
   background: #f7f7f5;
 }
 
+.velqra-product-card-media {
+  overflow: hidden;
+}
+
+.velqra-product-card-assets {
+  width: 100%;
+  overflow: hidden;
+}
+
+.velqra-product-card-assets > img {
+  display: block;
+}
+
+.velqra-product-card-video {
+  height: 100%;
+}
+
 @media (max-width: 640px) {
   .velqra-product-grid-card img,
   .velqra-product-grid-card video {

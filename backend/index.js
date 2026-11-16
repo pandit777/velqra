@@ -421,7 +421,7 @@ const uploadVideo = multer({
     cb(error);
   }
 });
-const allowedReviewImageTypes = new Map([
+const allowedImageTypes = new Map([
   ['image/jpeg', '.jpg'],
   ['image/png', '.png'],
   ['image/webp', '.webp']
@@ -429,11 +429,11 @@ const allowedReviewImageTypes = new Map([
 const uploadReviewImage = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, reviewsDir),
-    filename: (req, file, cb) => cb(null, `review_${crypto.randomUUID()}${allowedReviewImageTypes.get(file.mimetype)}`)
+    filename: (req, file, cb) => cb(null, `review_${crypto.randomUUID()}${allowedImageTypes.get(file.mimetype)}`)
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (allowedReviewImageTypes.has(file.mimetype)) return cb(null, true);
+    if (allowedImageTypes.has(file.mimetype)) return cb(null, true);
     const error = new Error('Only JPG, PNG, and WebP review photos are allowed');
     error.status = 400;
     cb(error);
@@ -445,6 +445,16 @@ const productVideoUpload = multer({
   fileFilter: (req, file, cb) => {
     if (allowedVideoTypes.has(file.mimetype)) return cb(null, true);
     const error = new Error('Only MP4, WebM, MOV, and OGG videos are allowed');
+    error.status = 400;
+    cb(error);
+  }
+});
+const productImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (allowedImageTypes.has(file.mimetype)) return cb(null, true);
+    const error = new Error('Only JPG, PNG, and WebP product images are allowed');
     error.status = 400;
     cb(error);
   }
@@ -1430,6 +1440,42 @@ app.post('/api/admin/products/upload-video', requireAdmin, productVideoUpload.si
   } catch (error) {
     console.error('Product video upload failed:', error);
     return res.status(500).json({ success: false, message: 'Video upload failed. Please try again.' });
+  }
+});
+
+app.post('/api/admin/products/upload-image', requireAdmin, productImageUpload.single('image'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'Select a product image to upload' });
+  }
+
+  try {
+    const bucket = 'product-images';
+    const { error: bucketError } = await supabase.storage.getBucket(bucket);
+    if (bucketError) {
+      const { error: createBucketError } = await supabase.storage.createBucket(bucket, {
+        public: true,
+        fileSizeLimit: '5242880',
+        allowedMimeTypes: [...allowedImageTypes.keys()]
+      });
+      if (createBucketError) {
+        const { error: verifyBucketError } = await supabase.storage.getBucket(bucket);
+        if (verifyBucketError) throw createBucketError;
+      }
+    }
+
+    const filePath = `${crypto.randomUUID()}${allowedImageTypes.get(req.file.mimetype)}`;
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, req.file.buffer, {
+      cacheControl: '31536000',
+      contentType: req.file.mimetype,
+      upsert: false
+    });
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    return res.status(201).json({ success: true, imageUrl: data.publicUrl });
+  } catch (error) {
+    console.error('Product image upload failed:', error);
+    return res.status(500).json({ success: false, message: 'Product image upload failed. Please try again.' });
   }
 });
 

@@ -37,6 +37,8 @@ export default function Products() {
           <img 
             src={product.image || product.imageUrl || product.mainImage} 
             alt={product.name}
+            loading="lazy"
+            decoding="async"
             onError={(e) => {
               e.target.src = 'https://via.placeholder.com/300x300?text=No+Image';
             }}

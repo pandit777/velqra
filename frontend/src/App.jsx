@@ -15,9 +15,6 @@ import {
 import LocaleControls from './i18n/LocaleControls';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import ProductReviewsModal, { getDemoReviewSummary, ReviewStars } from './components/ProductReviewsModal';
-import banner1 from './assets/banner1.png';
-import banner2 from './assets/banner2.png';
-import banner3 from './assets/banner3.png';
 import velqraLogo from './assets/velqra-logo.png';
 
 // =============================================
@@ -176,6 +173,156 @@ const getProductDisplayImage = (product) => {
     </svg>
   `;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const getProductVideoUrl = (product) => {
+  const videoUrl = String(product?.videoUrl || product?.video_url || '').trim();
+  return videoUrl.startsWith('/') ? `${BACKEND_ORIGIN}${videoUrl}` : videoUrl;
+};
+
+const HomeProductMedia = ({ product }) => {
+  const [isVideoActive, setIsVideoActive] = useState(false);
+  const [videoHasStarted, setVideoHasStarted] = useState(false);
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const mediaRef = useRef(null);
+  const videoRef = useRef(null);
+  const videoActiveRef = useRef(false);
+  const videoUrl = getProductVideoUrl(product);
+  const hasUploadedVideo = product.videoType === 'uploaded' && Boolean(videoUrl);
+
+  const activateVideo = () => {
+    videoActiveRef.current = true;
+    setVideoHasStarted(false);
+    setPlaybackBlocked(false);
+    setIsVideoActive(true);
+  };
+
+  const deactivateVideo = () => {
+    videoActiveRef.current = false;
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      if (video.readyState > 0) video.currentTime = 0;
+    }
+    setVideoHasStarted(false);
+    setPlaybackBlocked(false);
+    setIsVideoActive(false);
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!isVideoActive || !video) return undefined;
+
+    let active = true;
+    try {
+      Promise.resolve(video.play())
+        .then(() => {
+          if (active) setPlaybackBlocked(false);
+        })
+        .catch(() => {
+          if (active) setPlaybackBlocked(true);
+        });
+    } catch {
+      setPlaybackBlocked(true);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [isVideoActive]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    const isTouchDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    if (!media || !hasUploadedVideo || !isTouchDevice || !('IntersectionObserver' in window)) return undefined;
+
+    let dwellTimer;
+    const observer = new IntersectionObserver(([entry]) => {
+      const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.65;
+      if (!isVisible) {
+        window.clearTimeout(dwellTimer);
+        dwellTimer = undefined;
+        videoActiveRef.current = false;
+        const video = videoRef.current;
+        if (video) {
+          video.pause();
+          if (video.readyState > 0) video.currentTime = 0;
+        }
+        setVideoHasStarted(false);
+        setPlaybackBlocked(false);
+        setIsVideoActive(false);
+      } else if (dwellTimer === undefined && !videoActiveRef.current) {
+        dwellTimer = window.setTimeout(() => {
+          dwellTimer = undefined;
+          videoActiveRef.current = true;
+          setIsVideoActive(true);
+        }, 2000);
+      }
+    }, { threshold: [0, 0.65] });
+
+    observer.observe(media);
+    return () => {
+      window.clearTimeout(dwellTimer);
+      observer.disconnect();
+    };
+  }, [hasUploadedVideo, product._id]);
+
+  return (
+    <div
+      ref={mediaRef}
+      className="velqra-product-card-assets relative"
+      onMouseEnter={() => {
+        if (window.matchMedia('(hover: hover)').matches && hasUploadedVideo) activateVideo();
+      }}
+      onMouseLeave={() => {
+        if (window.matchMedia('(hover: hover)').matches) deactivateVideo();
+      }}
+      onFocus={() => {
+        if (window.matchMedia('(hover: hover)').matches && hasUploadedVideo) activateVideo();
+      }}
+      onBlur={(event) => {
+        if (window.matchMedia('(hover: hover)').matches &&
+            !event.currentTarget.contains(event.relatedTarget)) {
+          deactivateVideo();
+        }
+      }}
+    >
+      <img
+        src={getProductDisplayImage(product)}
+        alt={product.name}
+        loading="lazy"
+        decoding="async"
+        className={`transition duration-500 group-hover:scale-[1.04] ${videoHasStarted ? 'opacity-0' : 'opacity-100'}`}
+      />
+      {hasUploadedVideo && (
+        <video
+          ref={videoRef}
+          src={videoUrl}
+          autoPlay={isVideoActive}
+          muted
+          loop
+          playsInline
+          preload={isVideoActive ? 'auto' : 'none'}
+          aria-label={`${product.name} demo video`}
+          onPlaying={() => {
+            setVideoHasStarted(true);
+            setPlaybackBlocked(false);
+          }}
+          className={`velqra-product-card-video absolute inset-0 transition-opacity duration-300 ${
+            videoHasStarted ? 'opacity-100' : 'opacity-0'
+          }`}
+        />
+      )}
+      {playbackBlocked && (
+        <span
+          role="status"
+          className="absolute inset-0 z-[1] flex items-center justify-center bg-black/55 px-3 text-center text-xs font-bold text-white"
+        >
+          Video could not autoplay. Open the product to play it.
+        </span>
+      )}
+    </div>
+  );
 };
 
 // ✅ YouTube ID Extractor
@@ -644,6 +791,8 @@ const ReturnRequestModal = ({ isOpen, onClose, order, onSuccess }) => {
                       <img
                         src={item.image || getProductDisplayImage(item)}
                         alt=""
+                        loading="lazy"
+                        decoding="async"
                         className="w-10 h-10 rounded object-cover border"
                       />
                       <div className="flex-1 min-w-0">
@@ -1417,6 +1566,8 @@ const DeveloperAboutLegacyPage = () => {
                 <img 
                   src="/Dev.jpg" 
                   alt="Gourav Sharma - Developer" 
+                  loading="lazy"
+                  decoding="async"
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     e.target.onerror = null;
@@ -1721,17 +1872,18 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
   const displayedRating = actualReviewsCount ? Number(product.rating || 0) : demoReviewSummary.rating;
   const displayedReviewsCount = actualReviewsCount || demoReviewSummary.reviewsCount;
   const hasVideo = Boolean(product.videoUrl && product.videoUrl.trim());
-  const videoUrl = hasVideo && product.videoUrl.startsWith('/')
-    ? `${BACKEND_ORIGIN}${product.videoUrl}`
-    : product.videoUrl;
+  const videoUrl = hasVideo ? getProductVideoUrl(product) : '';
   const youtubeId = getYouTubeId(videoUrl);
   const vimeoId = getVimeoId(videoUrl);
+  const imageMedia = images.map(url => ({ type: 'image', url }));
+  const videoMedia = hasVideo ? [{
+    type: product.videoType === 'uploaded' ? 'uploadedVideo' : 'linkedVideo',
+    url: videoUrl
+  }] : [];
   const mediaItems = [
-    ...(hasVideo ? [{
-      type: product.videoType === 'uploaded' ? 'uploadedVideo' : 'linkedVideo',
-      url: videoUrl
-    }] : []),
-    ...images.map(url => ({ type: 'image', url }))
+    ...imageMedia.slice(0, 1),
+    ...videoMedia,
+    ...imageMedia.slice(1)
   ];
   const promoPrice = promoApplied
     ? Math.round(product.price * (1 - (Number(product.promoDiscount) || 0) / 100))
@@ -1764,7 +1916,8 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                     src={media.url}
                     controls
                     playsInline
-                    preload="metadata"
+                    preload="auto"
+                    poster={getProductDisplayImage(product)}
                     className="h-full w-full object-contain"
                   />
                 ) : media.type === 'linkedVideo' ? (
@@ -1797,6 +1950,8 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                   <img
                     src={media.url}
                     alt={`${product.name} ${index + 1}`}
+                    loading={index === 0 ? 'eager' : 'lazy'}
+                    decoding="async"
                     className="h-full w-full rounded-xl object-contain p-4"
                     onError={(e) => {
                       e.target.onerror = null;
@@ -1823,7 +1978,13 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                   }`}
                 >
                   {media.type === 'image' ? (
-                    <img src={media.url} alt={`${product.name} ${index + 1}`} className="h-full w-full bg-white object-contain p-1" />
+                    <img
+                      src={media.url}
+                      alt={`${product.name} ${index + 1}`}
+                      loading="lazy"
+                      decoding="async"
+                      className="h-full w-full bg-white object-contain p-1"
+                    />
                   ) : (
                     <span className="flex h-full w-full items-center justify-center bg-slate-900 text-2xl text-white" aria-label="Video">▶</span>
                   )}
@@ -2398,6 +2559,8 @@ const OrdersPage = ({ onLoginRequest }) => {
                           <img 
                             src={item.image || getProductDisplayImage(item)} 
                             alt={item.name}
+                            loading="lazy"
+                            decoding="async"
                             className="w-10 h-10 object-cover rounded-lg border border-slate-200"
                             onError={(e) => e.target.src = 'https://via.placeholder.com/40?text=Product'}
                           />
@@ -2586,6 +2749,8 @@ const OrderTracking = () => {
                 <img 
                   src={getProductDisplayImage(item)} 
                   alt={item.name}
+                  loading="lazy"
+                  decoding="async"
                   className="w-10 h-10 object-cover rounded-lg border border-slate-200"
                   onError={(e) => e.target.src = 'https://via.placeholder.com/40'}
                 />
@@ -2660,6 +2825,7 @@ export default function App() {
   const t = (key, values) => translate(language, key, values);
   const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [activeReviewsProduct, setActiveReviewsProduct] = useState(null);
   const [productStockDrafts, setProductStockDrafts] = useState({});
   const [stockUpdatingId, setStockUpdatingId] = useState(null);
@@ -2678,8 +2844,6 @@ export default function App() {
   const [marketingConsent, setMarketingConsent] = useState(false);
   const [error, setError] = useState('');
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
-  const [activeBanner, setActiveBanner] = useState(0);
-  const banners = [banner1, banner2, banner3];
 
   useEffect(() => {
     captureTrafficAttribution(location.search, location.pathname);
@@ -2694,6 +2858,11 @@ export default function App() {
   }, [currency]);
 
   useEffect(() => {
+    if (currency === 'INR') {
+      setExchangeRateStatus('ready');
+      return undefined;
+    }
+
     let active = true;
     const loadExchangeRates = async () => {
       try {
@@ -2740,7 +2909,7 @@ export default function App() {
       active = false;
       window.clearInterval(refreshTimer);
     };
-  }, []);
+  }, [currency]);
 
   // Auth States
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
@@ -2949,6 +3118,7 @@ export default function App() {
   const [newProdDescription, setNewProdDescription] = useState('');
   const [newProdImageUrl, setNewProdImageUrl] = useState('');
   const [newProdImageFile, setNewProdImageFile] = useState('');
+  const [newProdUploadedImages, setNewProdUploadedImages] = useState([]);
   const [newProdPromoCode, setNewProdPromoCode] = useState('');
   const [newProdPromoDiscount, setNewProdPromoDiscount] = useState('');
   const [newProdImages, setNewProdImages] = useState('');
@@ -2960,6 +3130,7 @@ export default function App() {
   const [appliedPromo, setAppliedPromo] = useState(null);
   const [newProdVideoType, setNewProdVideoType] = useState('youtube');
   const [uploadingProductVideo, setUploadingProductVideo] = useState(false);
+  const [uploadingProductImages, setUploadingProductImages] = useState(false);
   const [newProdAttributes, setNewProdAttributes] = useState({});
   const [newAttrKey, setNewAttrKey] = useState('');
   const [newAttrValues, setNewAttrValues] = useState('');
@@ -3124,13 +3295,6 @@ export default function App() {
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-
-  useEffect(() => {
-    const bannerTimer = setInterval(() => {
-      setActiveBanner((current) => (current + 1) % banners.length);
-    }, 4000);
-    return () => clearInterval(bannerTimer);
-  }, [banners.length]);
 
   const startRegTimer = () => {
     setRegTimer(60);
@@ -3415,8 +3579,7 @@ export default function App() {
 
 
   const fetchProducts = async () => {
-    const cachedProducts = getCachedProducts();
-    setLoading(cachedProducts.length === 0);
+    setProductsLoading(true);
     try {
       if (!isSupabaseConfigured) {
         showToast('Add Supabase URL and anon key to load products', 'error');
@@ -3434,13 +3597,15 @@ export default function App() {
     } catch (err) {
       showToast('Failed to load products from Supabase', 'error');
     } finally {
-      setLoading(false);
+      setProductsLoading(false);
     }
   };
 
   useEffect(() => {
-    if (adminSetupStatus === 'complete') fetchProducts();
-  }, [adminSetupStatus]);
+    if (location.pathname === '/' || location.pathname === '/admin') {
+      fetchProducts();
+    }
+  }, [location.pathname]);
 
   const syncGuestCart = async (token, user) => {
     if (!token || !user || user.role === 'admin' || cart.length === 0) return;
@@ -4014,6 +4179,51 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  const handleProductImagesUpload = async (event) => {
+    const input = event.currentTarget;
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (files.length === 0) return;
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const invalidType = files.find(file => !allowedTypes.includes(file.type));
+    if (invalidType) {
+      showToast('Choose JPG, PNG, or WebP product images.', 'error');
+      return;
+    }
+    const oversizedFile = files.find(file => file.size > 5 * 1024 * 1024);
+    if (oversizedFile) {
+      showToast('Each product image must be 5 MB or less.', 'error');
+      return;
+    }
+
+    setUploadingProductImages(true);
+    let uploadedCount = 0;
+    try {
+      const token = sessionStorage.getItem('velqra_token');
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('image', file);
+        const { data } = await axios.post(`${API_URL}/admin/products/upload-image`, formData, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!data.success || !data.imageUrl) {
+          throw new Error('Image upload did not return an image URL.');
+        }
+        setNewProdUploadedImages(currentImages => [...currentImages, data.imageUrl]);
+        uploadedCount += 1;
+      }
+      showToast(`✅ ${uploadedCount} product image${uploadedCount === 1 ? '' : 's'} uploaded.`, 'success');
+    } catch (err) {
+      const partialUploadMessage = uploadedCount > 0
+        ? ` ${uploadedCount} image${uploadedCount === 1 ? '' : 's'} uploaded before the failure.`
+        : '';
+      showToast(`${err.response?.data?.message || err.message || 'Product image upload failed.'}${partialUploadMessage}`, 'error');
+    } finally {
+      setUploadingProductImages(false);
+    }
+  };
+
   const handleProductVideoUpload = async (event) => {
     const file = event.target.files?.[0];
     const input = event.currentTarget;
@@ -4052,7 +4262,17 @@ export default function App() {
 
   const handleAddProduct = async (e) => {
     e.preventDefault();
-    if (!newProdName || !newProdOriginalPrice || (!newProdImageUrl && !newProdVideoUrl)) {
+    if (uploadingProductImages || uploadingProductVideo) {
+      showToast('Wait for product media uploads to finish.', 'error');
+      return;
+    }
+    const manuallyAddedImageUrls = newProdImages.split(',').map(image => image.trim()).filter(Boolean);
+    const productImageUrls = [
+      newProdImageUrl.trim(),
+      ...newProdUploadedImages,
+      ...manuallyAddedImageUrls
+    ].filter(Boolean);
+    if (!newProdName || !newProdOriginalPrice || (productImageUrls.length === 0 && !newProdVideoUrl)) {
       showToast('Name, price, and an image or video are required.', 'error');
       return;
     }
@@ -4080,10 +4300,8 @@ export default function App() {
       brand: newProdBrand,
       weight: newProdWeight || null,
       warranty: newProdWarranty || '',
-      imageUrl: newProdImageUrl.trim(),
-      images: newProdImages
-        ? newProdImages.split(',').map(img => img.trim()).filter(Boolean)
-        : newProdImageUrl.trim() ? [newProdImageUrl.trim()] : [],
+      imageUrl: productImageUrls[0] || '',
+      images: productImageUrls,
       videoUrl: newProdVideoUrl.trim() || '',
       videoType: newProdVideoType || 'youtube',
       attributes: newProdAttributes,
@@ -4112,6 +4330,7 @@ export default function App() {
         setNewProdDescription('');
         setNewProdImageUrl('');
         setNewProdImageFile('');
+        setNewProdUploadedImages([]);
         setNewProdImages('');
         setNewProdBrand('');
         setNewProdWeight('');
@@ -4324,7 +4543,6 @@ export default function App() {
     const matchCategory = activeCategory === 'All' || categoryKey === 'facewash';
     return matchSearch && matchCategory;
   });
-
   const totalCartItems = cart.reduce((sum, item) => sum + item.qty, 0);
   const totalCartPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
   const totalSavings = cart.reduce((sum, item) => {
@@ -4337,6 +4555,23 @@ export default function App() {
     : 0;
   const grandTotal = Math.max(0, totalCartPrice - promoDiscountAmount) + deliveryCharge;
 
+  const needsProductCatalog = location.pathname === '/' || location.pathname === '/admin';
+  const isStoreInitializing = adminSetupStatus === 'loading' ||
+    (needsProductCatalog && adminSetupStatus === 'complete' && productsLoading);
+  if (isStoreInitializing) {
+    return (
+      <main
+        role="status"
+        aria-live="polite"
+        className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#f1f1ef] px-4 text-[#173b32]"
+      >
+        <img src={velqraLogo} alt="VELQRA" className="h-12 w-auto object-contain" />
+        <span className="h-10 w-10 animate-spin rounded-full border-4 border-[#173b32]/15 border-t-[#173b32]" />
+        <p className="text-sm font-bold uppercase tracking-[0.18em]">Loading VELQRA...</p>
+      </main>
+    );
+  }
+
   if (adminSetupStatus !== 'complete') {
     const changingPassword = adminPasswordChangeRequired;
 
@@ -4346,22 +4581,18 @@ export default function App() {
           <div className="mb-6 text-center">
             <img src={velqraLogo} alt="VELQRA" className="mx-auto mb-5 h-12 w-auto object-contain" />
             <h1 className="text-xl font-black text-[#173b32]">
-              {adminSetupStatus === 'loading'
-                ? 'Checking store setup...'
-                : adminSetupStatus === 'error'
-                  ? 'Store setup unavailable'
-                  : changingPassword
-                    ? 'Set a new admin password'
-                    : 'Admin setup required'}
+              {adminSetupStatus === 'error'
+                ? 'Store setup unavailable'
+                : changingPassword
+                  ? 'Set a new admin password'
+                  : 'Admin setup required'}
             </h1>
             <p className="mt-2 text-sm text-slate-500">
-              {adminSetupStatus === 'loading'
-                ? 'Please wait.'
-                : adminSetupStatus === 'error'
-                  ? 'The store cannot open until the admin setup service is reachable.'
-                  : changingPassword
-                    ? 'Choose a new password to unlock the storefront.'
-                    : 'Sign in as the admin and change the initial password before the storefront opens.'}
+              {adminSetupStatus === 'error'
+                ? 'The store cannot open until the admin setup service is reachable.'
+                : changingPassword
+                  ? 'Choose a new password to unlock the storefront.'
+                  : 'Sign in as the admin and change the initial password before the storefront opens.'}
             </p>
           </div>
 
@@ -4373,8 +4604,6 @@ export default function App() {
             >
               Retry
             </button>
-          ) : adminSetupStatus === 'loading' ? (
-            <div className="py-4 text-center text-sm text-slate-500">Loading...</div>
           ) : changingPassword ? (
             <form onSubmit={handleAdminPasswordChange} className="space-y-4">
               <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -4858,9 +5087,7 @@ export default function App() {
                           {searchQuery && <span className="max-w-full truncate">{t('Search:')} {searchQuery}</span>}
                         </div>
                       </div>
-                      {loading ? (
-                        <div className="py-20 text-center text-sm font-bold uppercase tracking-widest">{t('Loading products...')}</div>
-                      ) : filteredProducts.length === 0 ? (
+                      {filteredProducts.length === 0 ? (
                         <div className="rounded-lg border border-neutral-200 bg-white py-16 text-center">
                           <p className="font-serif text-2xl">
                             {t(products.length === 0 ? 'No products available' : 'No products match your filters')}
@@ -4879,22 +5106,9 @@ export default function App() {
                             return (
                               <div key={product._id} className="velqra-product-grid-card group">
                                 <Link to={`/product/${product._id}`} className="block">
-                                  <div className="relative">
+                                  <div className="velqra-product-card-media relative">
                                     {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
-                                    {product.videoType === 'uploaded' && product.videoUrl ? (
-                                      <video
-                                        src={product.videoUrl}
-                                        autoPlay
-                                        muted
-                                        loop
-                                        playsInline
-                                        preload="metadata"
-                                        aria-label={`${product.name} demo video`}
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
-                                      <img src={getProductDisplayImage(product)} alt={product.name} className="transition duration-500 group-hover:scale-[1.04]" />
-                                    )}
+                                    <HomeProductMedia product={product} />
                                     {product.stock <= 0 && (
                                       <div
                                         role="status"
@@ -5132,7 +5346,12 @@ export default function App() {
                           }}
                           placeholder="https://example.com/product-image.jpg"
                           className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-[#0B3C5D] focus:bg-white transition"
-                          required={!newProdImageFile && !newProdVideoUrl}
+                          required={
+                            !newProdImageFile &&
+                            !newProdVideoUrl &&
+                            newProdUploadedImages.length === 0 &&
+                            !newProdImages.trim()
+                          }
                         />
                         <div className="flex items-center gap-2 my-2 text-[10px] text-slate-400">
                           <span className="h-px flex-1 bg-slate-200" />
@@ -5160,9 +5379,43 @@ export default function App() {
                         )}
                       </div>
 
+                      <div>
+                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">
+                          Add Multiple Product Images
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          onChange={handleProductImagesUpload}
+                          disabled={uploadingProductImages}
+                          className="w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-[#0B3C5D] file:px-3 file:py-2 file:text-xs file:font-bold file:text-white disabled:opacity-50"
+                        />
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          Select as many JPG, PNG, or WebP images as needed. Each image can be up to 5 MB.
+                        </p>
+                        {uploadingProductImages && (
+                          <p role="status" className="mt-2 text-xs font-semibold text-[#0B3C5D]">
+                            Uploading product images...
+                          </p>
+                        )}
+                        {newProdUploadedImages.length > 0 && (
+                          <div className="mt-2 grid grid-cols-4 gap-2">
+                            {newProdUploadedImages.map((imageUrl, index) => (
+                              <img
+                                key={`${imageUrl}-${index}`}
+                                src={imageUrl}
+                                alt={`Additional product image ${index + 1}`}
+                                className="h-16 w-full rounded-lg border border-slate-200 object-cover"
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
                       {/* Additional Images */}
                       <div>
-                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Additional Images</label>
+                        <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Additional Image URLs (optional)</label>
                         <input
                           type="text"
                           value={newProdImages}
@@ -5247,10 +5500,16 @@ export default function App() {
 
                       <button
                         type="submit"
-                        disabled={loading || uploadingProductVideo}
+                        disabled={loading || uploadingProductVideo || uploadingProductImages}
                         className="w-full bg-[#0B3C5D] text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider hover:bg-[#07263b] transition disabled:opacity-50"
                       >
-                        {uploadingProductVideo ? '⏳ Uploading video...' : loading ? '⏳ Processing...' : '🚀 Add Product'}
+                        {uploadingProductImages
+                          ? '⏳ Uploading images...'
+                          : uploadingProductVideo
+                            ? '⏳ Uploading video...'
+                            : loading
+                              ? '⏳ Processing...'
+                              : '🚀 Add Product'}
                       </button>
                     </form>
                   </div>
