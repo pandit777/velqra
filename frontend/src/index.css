@@ -259,15 +259,26 @@ body {
 
 .velqra-home-hero {
   position: relative;
+  isolation: isolate;
+  overflow: hidden;
   min-height: clamp(430px, 42vw, 620px);
   display: flex;
   align-items: center;
   padding: 42px max(24px, 5vw);
   border-bottom: 1px solid #d8d8d2;
   background-color: #173b32;
+  background-image: url('./assets/banner1.png');
   background-position: center;
   background-repeat: no-repeat;
-  background-size: contain;
+  background-size: cover;
+}
+
+.velqra-home-hero::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(8, 8, 8, 0.8) 0%, rgba(8, 8, 8, 0.52) 48%, rgba(8, 8, 8, 0.12) 100%);
 }
 
 .velqra-home-hero::after {
@@ -319,7 +330,7 @@ body {
     align-items: flex-end;
     padding-bottom: 36px;
     background-position: center top;
-    background-size: 100% auto;
+    background-size: cover;
   }
 
   .velqra-home-hero h1 {

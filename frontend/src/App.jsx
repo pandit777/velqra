@@ -4823,10 +4823,6 @@ export default function App() {
                     {!normalizedSearch && (
                     <section
                       className="velqra-home-hero"
-                      style={{
-                        backgroundImage: `linear-gradient(90deg, rgba(8, 8, 8, 0.88) 0%, rgba(8, 8, 8, 0.62) 48%, rgba(8, 8, 8, 0.18) 100%), url(${banner1})`,
-                        backgroundPosition: '100% center'
-                      }}
                     >
                       <div>
                         <p>{t('PURE BOTANICAL SCIENCE')}</p>
