@@ -184,21 +184,17 @@ const HomeProductMedia = ({ product }) => {
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [videoHasStarted, setVideoHasStarted] = useState(false);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
-  const mediaRef = useRef(null);
   const videoRef = useRef(null);
-  const videoActiveRef = useRef(false);
   const videoUrl = getProductVideoUrl(product);
   const hasUploadedVideo = product.videoType === 'uploaded' && Boolean(videoUrl);
 
   const activateVideo = () => {
-    videoActiveRef.current = true;
     setVideoHasStarted(false);
     setPlaybackBlocked(false);
     setIsVideoActive(true);
   };
 
   const deactivateVideo = () => {
-    videoActiveRef.current = false;
     const video = videoRef.current;
     if (video) {
       video.pause();
@@ -231,60 +227,14 @@ const HomeProductMedia = ({ product }) => {
     };
   }, [isVideoActive]);
 
-  useEffect(() => {
-    const media = mediaRef.current;
-    const isTouchDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    if (!media || !hasUploadedVideo || !isTouchDevice || !('IntersectionObserver' in window)) return undefined;
-
-    let dwellTimer;
-    const observer = new IntersectionObserver(([entry]) => {
-      const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.65;
-      if (!isVisible) {
-        window.clearTimeout(dwellTimer);
-        dwellTimer = undefined;
-        videoActiveRef.current = false;
-        const video = videoRef.current;
-        if (video) {
-          video.pause();
-          if (video.readyState > 0) video.currentTime = 0;
-        }
-        setVideoHasStarted(false);
-        setPlaybackBlocked(false);
-        setIsVideoActive(false);
-      } else if (dwellTimer === undefined && !videoActiveRef.current) {
-        dwellTimer = window.setTimeout(() => {
-          dwellTimer = undefined;
-          videoActiveRef.current = true;
-          setIsVideoActive(true);
-        }, 2000);
-      }
-    }, { threshold: [0, 0.65] });
-
-    observer.observe(media);
-    return () => {
-      window.clearTimeout(dwellTimer);
-      observer.disconnect();
-    };
-  }, [hasUploadedVideo, product._id]);
-
   return (
     <div
-      ref={mediaRef}
       className="velqra-product-card-assets relative"
       onMouseEnter={() => {
         if (window.matchMedia('(hover: hover)').matches && hasUploadedVideo) activateVideo();
       }}
       onMouseLeave={() => {
         if (window.matchMedia('(hover: hover)').matches) deactivateVideo();
-      }}
-      onFocus={() => {
-        if (window.matchMedia('(hover: hover)').matches && hasUploadedVideo) activateVideo();
-      }}
-      onBlur={(event) => {
-        if (window.matchMedia('(hover: hover)').matches &&
-            !event.currentTarget.contains(event.relatedTarget)) {
-          deactivateVideo();
-        }
       }}
     >
       <img
