@@ -307,6 +307,106 @@ const HomeProductMedia = ({ product }) => {
   );
 };
 
+const ProductDetailVideo = ({ src, poster }) => {
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const videoRef = useRef(null);
+
+  const playMutedVideo = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.muted = true;
+    Promise.resolve(video.play())
+      .then(() => setPlaybackBlocked(false))
+      .catch(error => {
+        if (error?.name === 'AbortError') return;
+        console.error('Product detail video playback failed:', error);
+        setPlaybackBlocked(true);
+      });
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !('IntersectionObserver' in window)) return undefined;
+
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+        playMutedVideo();
+      } else {
+        video.pause();
+        if (video.readyState > 0) video.currentTime = 0;
+        setPlaybackBlocked(false);
+      }
+    }, { threshold: [0, 0.5] });
+
+    observer.observe(video);
+    return () => {
+      observer.disconnect();
+      video.pause();
+      if (video.readyState > 0) video.currentTime = 0;
+    };
+  }, [src]);
+
+  return (
+    <div className="relative h-full w-full" onClick={playMutedVideo}>
+      <video
+        ref={videoRef}
+        src={src}
+        muted
+        defaultMuted
+        playsInline
+        preload="none"
+        poster={poster}
+        className="h-full w-full object-contain"
+      />
+      {playbackBlocked && (
+        <span
+          role="status"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 px-3 text-center text-xs font-bold text-white"
+        >
+          Video could not autoplay.
+        </span>
+      )}
+    </div>
+  );
+};
+
+const ProductDetailVideoEmbed = ({ src, title, videoType }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const embedRef = useRef(null);
+  const muteParameter = videoType === 'youtube' ? 'mute=1' : 'muted=1';
+  const embedUrl = `${src}${src.includes('?') ? '&' : '?'}autoplay=1&${muteParameter}&controls=0&playsinline=1`;
+
+  useEffect(() => {
+    const embed = embedRef.current;
+    if (!embed || !('IntersectionObserver' in window)) return undefined;
+
+    const observer = new IntersectionObserver(([entry]) => {
+      setIsVisible(entry.isIntersecting && entry.intersectionRatio >= 0.5);
+    }, { threshold: [0, 0.5] });
+
+    observer.observe(embed);
+    return () => observer.disconnect();
+  }, [src]);
+
+  return (
+    <div
+      ref={embedRef}
+      className="h-full w-full"
+      onClick={() => setIsVisible(true)}
+    >
+      {isVisible && (
+        <iframe
+          src={embedUrl}
+          title={title}
+          className="pointer-events-none h-full w-full"
+          allow="autoplay"
+        />
+      )}
+    </div>
+  );
+};
+
 // ✅ YouTube ID Extractor
 const getYouTubeId = (url) => {
   if (!url) return null;
@@ -1889,37 +1989,27 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
             onScroll={(event) => setActiveMediaIndex(Math.round(
               event.currentTarget.scrollLeft / event.currentTarget.clientWidth
             ))}
-            className="flex aspect-square max-h-[28rem] w-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden rounded-2xl border border-slate-200 bg-white shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="flex aspect-square max-h-[28rem] w-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden rounded-2xl border border-slate-200 bg-white shadow-sm touch-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {mediaItems.map((media, index) => (
               <div key={`${media.type}-${index}`} className="flex h-full w-full shrink-0 snap-center items-center justify-center">
                 {media.type === 'uploadedVideo' ? (
-                  <video
+                  <ProductDetailVideo
                     src={media.url}
-                    controls
-                    playsInline
-                    preload="auto"
                     poster={getProductDisplayImage(product)}
-                    className="h-full w-full object-contain"
                   />
                 ) : media.type === 'linkedVideo' ? (
                   product.videoType === 'youtube' && youtubeId ? (
-                    <iframe
+                    <ProductDetailVideoEmbed
                       src={`https://www.youtube.com/embed/${youtubeId}`}
                       title={product.name}
-                      className="h-full w-full"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      loading="lazy"
+                      videoType={product.videoType}
                     />
                   ) : product.videoType === 'vimeo' && vimeoId ? (
-                    <iframe
+                    <ProductDetailVideoEmbed
                       src={`https://player.vimeo.com/video/${vimeoId}`}
                       title={product.name}
-                      className="h-full w-full"
-                      allow="autoplay; fullscreen; picture-in-picture"
-                      allowFullScreen
-                      loading="lazy"
+                      videoType={product.videoType}
                     />
                   ) : (
                     <div className="flex h-full w-full flex-col items-center justify-center text-slate-400">
@@ -1946,7 +2036,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
           </div>
 
           {mediaItems.length > 1 && (
-            <div className="flex gap-3 overflow-x-auto pb-2 touch-pan-x">
+            <div className="flex gap-3 overflow-x-auto pb-2 touch-auto">
               {mediaItems.map((media, index) => (
                 <button
                   key={`${media.type}-${index}`}
@@ -2807,7 +2897,6 @@ export default function App() {
   const t = (key, values) => translate(language, key, values);
   const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
-  const [productsLoading, setProductsLoading] = useState(true);
   const [activeReviewsProduct, setActiveReviewsProduct] = useState(null);
   const [productStockDrafts, setProductStockDrafts] = useState({});
   const [stockUpdatingId, setStockUpdatingId] = useState(null);
@@ -3134,7 +3223,6 @@ export default function App() {
 
   const loadAdminSetupStatus = async () => {
     const setupWasCompleted = localStorage.getItem(ADMIN_SETUP_CACHE_KEY) === 'true';
-    if (!setupWasCompleted) setAdminSetupStatus('loading');
     try {
       const { data } = await axios.get(`${API_URL}/admin/setup-status`);
       if (!data.success || typeof data.ready !== 'boolean') {
@@ -3561,7 +3649,6 @@ export default function App() {
 
 
   const fetchProducts = async () => {
-    setProductsLoading(true);
     try {
       if (!isSupabaseConfigured) {
         showToast('Add Supabase URL and anon key to load products', 'error');
@@ -3578,8 +3665,6 @@ export default function App() {
       localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(productsData));
     } catch (err) {
       showToast('Failed to load products from Supabase', 'error');
-    } finally {
-      setProductsLoading(false);
     }
   };
 
@@ -4537,24 +4622,7 @@ export default function App() {
     : 0;
   const grandTotal = Math.max(0, totalCartPrice - promoDiscountAmount) + deliveryCharge;
 
-  const needsProductCatalog = location.pathname === '/' || location.pathname === '/admin';
-  const isStoreInitializing = adminSetupStatus === 'loading' ||
-    (needsProductCatalog && adminSetupStatus === 'complete' && productsLoading);
-  if (isStoreInitializing) {
-    return (
-      <main
-        role="status"
-        aria-live="polite"
-        className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#f1f1ef] px-4 text-[#173b32]"
-      >
-        <img src={velqraLogo} alt="VELQRA" className="h-12 w-auto object-contain" />
-        <span className="h-10 w-10 animate-spin rounded-full border-4 border-[#173b32]/15 border-t-[#173b32]" />
-        <p className="text-sm font-bold uppercase tracking-[0.18em]">Loading VELQRA...</p>
-      </main>
-    );
-  }
-
-  if (adminSetupStatus !== 'complete') {
+  if (adminSetupStatus === 'required' || adminSetupStatus === 'error') {
     const changingPassword = adminPasswordChangeRequired;
 
     return (

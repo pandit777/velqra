@@ -134,50 +134,8 @@
         display: flex;
         flex-direction: column;
       }
-      .loading-skeleton {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-        gap: 16px;
-        color: #0B3C5D;
-        font-size: 1.1rem;
-      }
-      .loading-skeleton .brand-load {
-        font-family: Georgia, 'Times New Roman', serif;
-        color: #173b32;
-        font-size: clamp(2rem, 8vw, 4rem);
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        animation: pulse 1.5s ease-in-out infinite;
-      }
-      .loading-skeleton .brand-load sup {
-        margin-left: 2px;
-        color: #d4af37;
-        font-family: sans-serif;
-        font-size: 0.22em;
-        font-weight: 400;
-      }
-      .loading-skeleton .spinner {
-        width: 32px;
-        height: 32px;
-        border: 3px solid #e2e8f0;
-        border-top-color: #0B3C5D;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-      }
-      @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 0.6; transform: scale(1); }
-        50% { opacity: 1; transform: scale(1.05); }
-      }
       @media (prefers-reduced-motion: reduce) {
         * { animation-duration: 0.01ms !important; }
-        .loading-skeleton .spinner { animation: none; }
       }
     </style>
   </head>
@@ -201,38 +159,12 @@
     <!-- ============================================= -->
     <!-- ROOT APP -->
     <!-- ============================================= -->
-    <div id="root">
-      <div class="loading-skeleton">
-        <div class="brand-load" aria-label="VELQRA">VELQRA<sup>®</sup></div>
-        <span>Loading VELQRA...</span>
-        <div class="spinner" aria-hidden="true"></div>
-      </div>
-    </div>
+    <div id="root"></div>
     
     <!-- ============================================= -->
     <!-- VITE ENTRY POINT -->
     <!-- ============================================= -->
     <script type="module" src="/src/main.jsx"></script>
-    
-    <!-- ============================================= -->
-    <!-- FALLBACK -->
-    <!-- ============================================= -->
-    <script>
-      setTimeout(() => {
-        const root = document.getElementById('root');
-        if (root && root.innerHTML.includes('Loading VELQRA')) {
-          root.innerHTML = `
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;background:#f8fafc;">
-              <h1 style="color:#173b32;font-family:Georgia,'Times New Roman',serif;font-size:48px;letter-spacing:0.08em;margin-bottom:16px;">VELQRA<sup style="font-family:sans-serif;font-size:10px;color:#d4af37;">®</sup></h1>
-              <p style="color:#4a5568;max-width:400px;">Something went wrong. Please refresh or try again later.</p>
-              <button onclick="location.reload()" style="margin-top:16px;padding:12px 32px;background:#0B3C5D;color:white;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
-                🔄 Refresh
-              </button>
-            </div>
-          `;
-        }
-      }, 8000);
-    </script>
     
   </body>
 </html>
