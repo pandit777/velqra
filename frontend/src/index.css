@@ -2285,6 +2285,7 @@ body {
   margin: 0;
   padding: 0 24px;
   transform: translate(10px, calc(clamp(24px, 3vw, 36px) + 40px));
+  border-radius: 0;
   border-color: rgba(250, 249, 246, 0.9);
   color: var(--velqra-charcoal);
   background: rgba(250, 249, 246, 0.96);
@@ -2315,9 +2316,9 @@ body {
   }
 
   .velqra-home-hero .velqra-routine-trigger {
-    min-height: 44px;
-    padding: 0 18px;
-    font-size: 11px;
+    min-height: 38px;
+    padding: 0 14px;
+    font-size: 10px;
   }
 }
 
