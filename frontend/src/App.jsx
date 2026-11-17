@@ -2077,7 +2077,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
 
   const handleAddToCart = async (options = {}) => {
     if (!product || addingToCart) return false;
-    const { openDrawer = true } = options;
+    const { openCartPage = true } = options;
     
     if (product.attributes && Object.keys(product.attributes).length > 0) {
       const allSelected = Object.keys(product.attributes).every(key => {
@@ -2103,7 +2103,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
     setAddingToCart(true);
     try {
       if (addToCart) {
-        return await addToCart(productWithAttributes, { openDrawer });
+        return await addToCart(productWithAttributes, { openCartPage });
       }
       const event = new CustomEvent('addToCart', { detail: productWithAttributes });
       window.dispatchEvent(event);
@@ -2114,7 +2114,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
   };
 
   const handleBuyNow = async () => {
-    const added = await handleAddToCart({ openDrawer: false });
+    const added = await handleAddToCart({ openCartPage: false });
     if (added && openCheckout) openCheckout();
   };
 
@@ -3360,7 +3360,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
-  const [isCartDrawerOpen, setIsCartDrawerOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState('All');
   const [loading, setLoading] = useState(false);
   const [cartLoading, setCartLoading] = useState(false);
@@ -3504,22 +3503,6 @@ export default function App() {
       document.body.style.overflow = previousOverflow;
     };
   }, [isCartOpen]);
-
-  useEffect(() => {
-    if (isCartDrawerOpen) {
-      const previousOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-      const handleKeyDown = event => {
-        if (event.key === 'Escape') setIsCartDrawerOpen(false);
-      };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        document.body.style.overflow = previousOverflow;
-        window.removeEventListener('keydown', handleKeyDown);
-      };
-    }
-    return undefined;
-  }, [isCartDrawerOpen]);
 
   useEffect(() => {
     const revealElements = document.querySelectorAll('[data-reveal]');
@@ -5032,7 +5015,7 @@ export default function App() {
     }
   };
 
-  const addToCart = async (product, { openDrawer = true } = {}) => {
+  const addToCart = async (product, { openCartPage = true } = {}) => {
     const stock = Number(product.stock);
     if (!Number.isFinite(stock) || stock <= 0) {
       showToast('Out of stock!', 'error');
@@ -5055,7 +5038,7 @@ export default function App() {
           if (!data.success) throw new Error(data.message || 'Unable to add product to cart');
           setCart(normalizeCart(data.cart?.items || []));
         });
-        if (openDrawer) setIsCartDrawerOpen(true);
+        if (openCartPage) openCart();
         return true;
       } catch (cartError) {
         showToast(cartError.response?.data?.message || 'Could not add product to cart', 'error');
@@ -5083,7 +5066,7 @@ export default function App() {
       }
       return [...prev, { ...product, qty: 1 }];
     });
-    if (openDrawer) setIsCartDrawerOpen(true);
+    if (openCartPage) openCart();
     return true;
   };
 
@@ -6805,76 +6788,7 @@ export default function App() {
         </div>
       )}
 
-      {isCartDrawerOpen && !isCartOpen && (
-        <div
-          className="velqra-drawer-backdrop"
-          onMouseDown={event => {
-            if (event.target === event.currentTarget) setIsCartDrawerOpen(false);
-          }}
-        >
-          <aside
-            className="velqra-cart-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="cart-drawer-title"
-          >
-            <div className="velqra-cart-drawer-header">
-              <div>
-                <p>{t('Your Cart')}</p>
-                <h2 id="cart-drawer-title">{t('Added to your bag')}</h2>
-              </div>
-              <button type="button" aria-label={t('Continue Shopping')} onClick={() => setIsCartDrawerOpen(false)}>×</button>
-            </div>
-            {cartLoading ? (
-              <div className="velqra-cart-drawer-empty" role="status">{t('Loading your saved cart...')}</div>
-            ) : cart.length === 0 ? (
-              <div className="velqra-cart-drawer-empty">{t('Cart is empty')}</div>
-            ) : (
-              <>
-                <div className="velqra-cart-drawer-items">
-                  {cart.map(item => (
-                    <article className="velqra-cart-drawer-item" key={getCartItemKey(item)}>
-                      <img src={getProductDisplayImage(item)} alt={item.name} loading="lazy" />
-                      <div className="velqra-cart-drawer-item-info">
-                        <h3>{item.name}</h3>
-                        {item.selectedAttributes && Object.keys(item.selectedAttributes).length > 0 && (
-                          <p>{Object.entries(item.selectedAttributes).map(([key, value]) => `${key}: ${value}`).join(' · ')}</p>
-                        )}
-                        <strong>{formatPrice(item.price)}</strong>
-                        <div className="velqra-cart-drawer-quantity" aria-label={t('Quantity')}>
-                          <button type="button" aria-label={t('Decrease quantity')} onClick={() => updateQty(item, -1)}>−</button>
-                          <span>{item.qty}</span>
-                          <button type="button" aria-label={t('Increase quantity')} onClick={() => updateQty(item, 1)}>+</button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-                <div className="velqra-cart-drawer-footer">
-                  <div className="velqra-cart-drawer-subtotal">
-                    <span>{t('Subtotal')}</span>
-                    <strong>{formatPrice(totalCartPrice)}</strong>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={cartLoading}
-                    onClick={() => {
-                      setIsCartDrawerOpen(false);
-                      openCart();
-                      setCheckoutOpen(true);
-                    }}
-                  >
-                    {t('Proceed to Secure Checkout')}
-                  </button>
-                  <p>{t('Secure Checkout')}</p>
-                </div>
-              </>
-            )}
-          </aside>
-        </div>
-      )}
-
-      {/* CART SIDEBAR */}
+      {/* FULL-PAGE CART */}
       {isCartOpen && (
         <div
           className="fixed inset-0 z-[110] flex bg-[#faf9f6]"
