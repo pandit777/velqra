@@ -2326,9 +2326,10 @@ body {
   }
 
   .velqra-home-hero .velqra-routine-trigger {
-    min-height: 38px;
-    padding: 0 14px;
-    font-size: 10px;
+    min-height: 32px;
+    padding: 0 8px;
+    transform: translate(10px, calc(clamp(24px, 3vw, 36px) + 32px));
+    font-size: 8.5px;
   }
 }
 
@@ -2337,6 +2338,7 @@ body {
     min-height: 42px;
     padding: 0 18px;
     font-size: 11px;
+    transform: translate(10px, calc(clamp(24px, 3vw, 36px) + 56px));
   }
 }
 
