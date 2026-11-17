@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Routes, Route, useNavigate, Link, useLocation, useParams, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import { downloadOrderInvoice } from './services/api';
@@ -141,6 +142,187 @@ const normalizeProduct = (product) => {
   };
 };
 
+const getSearchableProductText = (product) => {
+  const attributes = Object.entries(product?.attributes || {}).flatMap(([key, value]) => [
+    key,
+    ...(Array.isArray(value) ? value : [value])
+  ]);
+  return [
+    product?.name,
+    product?.category,
+    product?.brand,
+    ...attributes
+  ].filter(value => typeof value === 'string' || typeof value === 'number').join(' ').toLowerCase();
+};
+
+const getProductMetadataText = (value) => {
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  if (Array.isArray(value)) {
+    return value.map(getProductMetadataText).filter(Boolean).join('\n');
+  }
+  if (value && typeof value === 'object') {
+    return [value.name || value.title, value.description || value.detail || value.value]
+      .filter(item => typeof item === 'string' || typeof item === 'number')
+      .join(': ')
+      .trim();
+  }
+  return '';
+};
+
+const getProductMetadata = (product, keys) => {
+  for (const key of keys) {
+    const text = getProductMetadataText(product?.[key]);
+    if (text) return text;
+  }
+  return '';
+};
+
+const getEditDistance = (left, right) => {
+  const previousRow = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const currentRow = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      currentRow[rightIndex] = Math.min(
+        currentRow[rightIndex - 1] + 1,
+        previousRow[rightIndex] + 1,
+        previousRow[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      );
+    }
+    for (let index = 0; index < previousRow.length; index += 1) previousRow[index] = currentRow[index];
+  }
+  return previousRow[right.length];
+};
+
+const getProductSearchScore = (product, searchQuery) => {
+  const query = searchQuery.trim().toLowerCase();
+  if (!query) return 0;
+
+  const searchableText = getSearchableProductText(product);
+  if (searchableText.includes(query) ||
+      searchableText.replace(/\s+/g, '').includes(query.replace(/\s+/g, ''))) return 0;
+
+  const queryWords = query.split(/\s+/).filter(Boolean);
+  const productWords = searchableText.split(/\s+/).filter(Boolean);
+  const candidates = queryWords.map(queryWord => productWords.flatMap((productWord, index) => {
+    if (queryWord.length < 3 || productWord.length < 3) {
+      return queryWord === productWord ? [{ index, distance: 0 }] : [];
+    }
+    const distance = getEditDistance(queryWord, productWord);
+    return distance <= 2 ? [{ index, distance }] : [];
+  })).sort((left, right) => left.length - right.length);
+
+  if (candidates.some(matches => matches.length === 0)) return Infinity;
+
+  let bestScore = Infinity;
+  const assignWords = (wordIndex, usedWords, edits) => {
+    if (edits > 2 || edits >= bestScore) return;
+    if (wordIndex === candidates.length) {
+      bestScore = edits;
+      return;
+    }
+    for (const candidate of candidates[wordIndex]) {
+      if (usedWords.has(candidate.index)) continue;
+      usedWords.add(candidate.index);
+      assignWords(wordIndex + 1, usedWords, edits + candidate.distance);
+      usedWords.delete(candidate.index);
+    }
+  };
+  assignWords(0, new Set(), 0);
+  return bestScore;
+};
+
+const matchesProductSearch = (product, searchQuery) =>
+  getProductSearchScore(product, searchQuery) <= 2;
+
+const HeaderSearchForm = ({ searchQuery, onSearchChange, suggestions, onSubmit, formatPrice, t, autoFocus = false, className = '' }) => {
+  const [isFocused, setIsFocused] = useState(false);
+  const hasQuery = Boolean(searchQuery.trim());
+  const submitSearch = () => {
+    setIsFocused(false);
+    onSubmit();
+  };
+
+  return (
+    <form
+      role="search"
+      onSubmit={event => {
+        event.preventDefault();
+        submitSearch();
+      }}
+      className={`velqra-header-search flex items-center gap-2 ${className}`}
+    >
+      <div className="relative min-w-0 flex-1">
+        <div className="velqra-search-field flex h-11 min-w-0 items-center gap-3 rounded-full border px-4 transition focus-within:ring-2 focus-within:ring-[#2e473b]/15">
+          <svg aria-hidden="true" className="h-5 w-5 shrink-0 text-[#2e473b]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="10.8" cy="10.8" r="6.8" />
+            <path strokeLinecap="round" d="m16 16 4.5 4.5" />
+          </svg>
+          <input
+            autoFocus={autoFocus}
+            type="search"
+            value={searchQuery}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                submitSearch();
+              }
+            }}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => window.setTimeout(() => setIsFocused(false), 120)}
+            onChange={event => onSearchChange(event.target.value)}
+            placeholder={t('Search products, brands, categories...')}
+            aria-label={t('Search products, brands, categories...')}
+            aria-autocomplete="list"
+            aria-expanded={isFocused && hasQuery}
+            className="h-full min-w-0 flex-1 border-0 bg-transparent text-sm text-[#1c241e] outline-none placeholder:text-[#858980]"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => onSearchChange('')}
+              aria-label="Clear search"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#73786f] transition hover:bg-[#e8e9e3] hover:text-[#1c241e]"
+            >
+              <span aria-hidden="true" className="text-lg leading-none">×</span>
+            </button>
+          )}
+        </div>
+        {isFocused && hasQuery && (
+          <div
+            role="listbox"
+            className="velqra-search-suggestions absolute left-0 right-0 top-[calc(100%+0.5rem)] z-[80] overflow-hidden rounded-2xl border border-[#e3e0d8] bg-white py-2 shadow-xl"
+          >
+            {suggestions.length > 0 ? suggestions.map(product => (
+              <Link
+                key={product._id}
+                to={`/product/${product._id}`}
+                role="option"
+                aria-selected="false"
+                onClick={() => setIsFocused(false)}
+                className="flex items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-[#f4f4ef]"
+              >
+                <img
+                  src={getProductDisplayImage(product)}
+                  alt=""
+                  loading="lazy"
+                  className="velqra-search-suggestion-image"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-[#1c241e]">{product.name}</span>
+                  <span className="mt-0.5 block truncate text-xs text-[#73786f]">{product.category || product.brand || ''}</span>
+                </span>
+                <span className="shrink-0 text-sm font-bold text-[#2e473b]">{formatPrice(product.price)}</span>
+              </Link>
+            )) : (
+              <p className="px-4 py-3 text-sm text-[#73786f]">{t('No products match your filters')}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </form>
+  );
+};
+
 // =============================================
 // Helper Functions
 // =============================================
@@ -184,21 +366,42 @@ const HomeProductMedia = ({ product }) => {
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [videoHasStarted, setVideoHasStarted] = useState(false);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
-  const mediaRef = useRef(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const imageRef = useRef(null);
   const videoRef = useRef(null);
-  const videoActiveRef = useRef(false);
+  const videoActivationTimerRef = useRef(null);
   const videoUrl = getProductVideoUrl(product);
+  const imageUrl = getProductDisplayImage(product);
   const hasUploadedVideo = product.videoType === 'uploaded' && Boolean(videoUrl);
 
+  useEffect(() => () => {
+    if (videoActivationTimerRef.current !== null) {
+      window.clearTimeout(videoActivationTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    setImageLoaded(false);
+    if (imageRef.current?.complete && imageRef.current.naturalWidth > 0) setImageLoaded(true);
+  }, [product._id, imageUrl]);
+
   const activateVideo = () => {
-    videoActiveRef.current = true;
     setVideoHasStarted(false);
     setPlaybackBlocked(false);
-    setIsVideoActive(true);
+    if (videoActivationTimerRef.current !== null) {
+      window.clearTimeout(videoActivationTimerRef.current);
+    }
+    videoActivationTimerRef.current = window.setTimeout(() => {
+      videoActivationTimerRef.current = null;
+      setIsVideoActive(true);
+    }, 1000);
   };
 
   const deactivateVideo = () => {
-    videoActiveRef.current = false;
+    if (videoActivationTimerRef.current !== null) {
+      window.clearTimeout(videoActivationTimerRef.current);
+      videoActivationTimerRef.current = null;
+    }
     const video = videoRef.current;
     if (video) {
       video.pause();
@@ -214,16 +417,24 @@ const HomeProductMedia = ({ product }) => {
     if (!isVideoActive || !video) return undefined;
 
     let active = true;
+    const handlePlaybackError = error => {
+      if (!active || error?.name === 'AbortError') return;
+      if (video.error ||
+          video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ||
+          video.networkState === HTMLMediaElement.NETWORK_LOADING) return;
+
+      console.error('Product card video playback failed:', error);
+      setPlaybackBlocked(true);
+    };
+
     try {
       Promise.resolve(video.play())
         .then(() => {
           if (active) setPlaybackBlocked(false);
         })
-        .catch(() => {
-          if (active) setPlaybackBlocked(true);
-        });
-    } catch {
-      setPlaybackBlocked(true);
+        .catch(handlePlaybackError);
+    } catch (error) {
+      handlePlaybackError(error);
     }
 
     return () => {
@@ -231,36 +442,8 @@ const HomeProductMedia = ({ product }) => {
     };
   }, [isVideoActive]);
 
-  useEffect(() => {
-    const media = mediaRef.current;
-    const isTouchDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    if (!media || !hasUploadedVideo || !isTouchDevice || !('IntersectionObserver' in window)) return undefined;
-
-    let dwellTimer;
-    const observer = new IntersectionObserver(([entry]) => {
-      const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.65;
-      if (!isVisible) {
-        window.clearTimeout(dwellTimer);
-        dwellTimer = undefined;
-        deactivateVideo();
-      } else if (dwellTimer === undefined && !videoActiveRef.current) {
-        dwellTimer = window.setTimeout(() => {
-          dwellTimer = undefined;
-          activateVideo();
-        }, 2000);
-      }
-    }, { threshold: [0, 0.65] });
-
-    observer.observe(media);
-    return () => {
-      window.clearTimeout(dwellTimer);
-      observer.disconnect();
-    };
-  }, [hasUploadedVideo, product._id]);
-
   return (
     <div
-      ref={mediaRef}
       className="velqra-product-card-assets relative"
       onMouseEnter={() => {
         if (window.matchMedia('(hover: hover)').matches && hasUploadedVideo) activateVideo();
@@ -269,11 +452,15 @@ const HomeProductMedia = ({ product }) => {
         if (window.matchMedia('(hover: hover)').matches) deactivateVideo();
       }}
     >
+      {!imageLoaded && <div className="velqra-media-skeleton" aria-hidden="true" />}
       <img
-        src={getProductDisplayImage(product)}
+        ref={imageRef}
+        src={imageUrl}
         alt={product.name}
         loading="lazy"
         decoding="async"
+        onLoad={() => setImageLoaded(true)}
+        onError={() => setImageLoaded(true)}
         className={`transition duration-500 group-hover:scale-[1.04] ${videoHasStarted ? 'opacity-0' : 'opacity-100'}`}
       />
       {hasUploadedVideo && (
@@ -289,6 +476,12 @@ const HomeProductMedia = ({ product }) => {
           onPlaying={() => {
             setVideoHasStarted(true);
             setPlaybackBlocked(false);
+          }}
+          onWaiting={() => setPlaybackBlocked(false)}
+          onError={() => {
+            if (videoRef.current?.error) {
+              console.error('Product card video failed to load:', videoRef.current.error);
+            }
           }}
           className={`velqra-product-card-video absolute inset-0 transition-opacity duration-300 ${
             videoHasStarted ? 'opacity-100' : 'opacity-0'
@@ -320,6 +513,10 @@ const ProductDetailVideo = ({ src, poster }) => {
       .then(() => setPlaybackBlocked(false))
       .catch(error => {
         if (error?.name === 'AbortError') return;
+        if (video.error ||
+            video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA ||
+            video.networkState === HTMLMediaElement.NETWORK_LOADING) return;
+
         console.error('Product detail video playback failed:', error);
         setPlaybackBlocked(true);
       });
@@ -353,10 +550,15 @@ const ProductDetailVideo = ({ src, poster }) => {
         ref={videoRef}
         src={src}
         muted
-        defaultMuted
         playsInline
         preload="none"
         poster={poster}
+        onWaiting={() => setPlaybackBlocked(false)}
+        onError={() => {
+          if (videoRef.current?.error) {
+            console.error('Product detail video failed to load:', videoRef.current.error);
+          }
+        }}
         className="h-full w-full object-contain"
       />
       {playbackBlocked && (
@@ -1777,8 +1979,29 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
   const [promoInput, setPromoInput] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
   const [addingToCart, setAddingToCart] = useState(false);
+  const [activeHotspot, setActiveHotspot] = useState(null);
+  const [showQuickBuy, setShowQuickBuy] = useState(false);
   const navigate = useNavigate();
   const mediaGalleryRef = useRef(null);
+  const addToCartButtonRef = useRef(null);
+
+  useEffect(() => {
+    const button = addToCartButtonRef.current;
+    if (!button) return undefined;
+
+    if (!('IntersectionObserver' in window)) {
+      const updateQuickBuy = () => setShowQuickBuy(button.getBoundingClientRect().bottom < 0);
+      window.addEventListener('scroll', updateQuickBuy, { passive: true });
+      updateQuickBuy();
+      return () => window.removeEventListener('scroll', updateQuickBuy);
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+      setShowQuickBuy(!entry.isIntersecting);
+    }, { threshold: 0 });
+    observer.observe(button);
+    return () => observer.disconnect();
+  }, [product?._id]);
 
   useEffect(() => {
     const fetchProductDetails = async () => {
@@ -1852,8 +2075,9 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
     fetchProductDetails();
   }, [id]);
 
-  const handleAddToCart = async () => {
+  const handleAddToCart = async (options = {}) => {
     if (!product || addingToCart) return false;
+    const { openDrawer = true } = options;
     
     if (product.attributes && Object.keys(product.attributes).length > 0) {
       const allSelected = Object.keys(product.attributes).every(key => {
@@ -1879,7 +2103,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
     setAddingToCart(true);
     try {
       if (addToCart) {
-        return await addToCart(productWithAttributes);
+        return await addToCart(productWithAttributes, { openDrawer });
       }
       const event = new CustomEvent('addToCart', { detail: productWithAttributes });
       window.dispatchEvent(event);
@@ -1890,7 +2114,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
   };
 
   const handleBuyNow = async () => {
-    const added = await handleAddToCart();
+    const added = await handleAddToCart({ openDrawer: false });
     if (added && openCheckout) openCheckout();
   };
 
@@ -1927,19 +2151,26 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
 
   if (loading) {
     return (
-      <div className="container mx-auto px-4 py-20 text-center">
-        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-[#0B3C5D]"></div>
-        <p className="text-slate-400 mt-4 font-medium">Loading product details...</p>
+      <div className="velqra-product-detail container mx-auto max-w-6xl px-4 py-10" aria-label="Loading product details" aria-busy="true">
+        <div className="grid gap-8 md:grid-cols-2">
+          <div className="velqra-skeleton-image aspect-square rounded-2xl" />
+          <div className="space-y-5 pt-4">
+            <div className="velqra-skeleton-line velqra-skeleton-short" />
+            <div className="velqra-skeleton-line h-10" />
+            <div className="velqra-skeleton-line velqra-skeleton-price" />
+            <div className="velqra-skeleton-line h-14" />
+          </div>
+        </div>
       </div>
     );
   }
 
   if (error || !product) {
     return (
-      <div className="container mx-auto px-4 py-20 text-center">
+      <div className="velqra-product-error container mx-auto px-4 py-20 text-center" role="alert">
         <div className="text-6xl mb-4">😕</div>
         <h3 className="text-red-500 font-bold text-lg">{error || 'Product not found'}</h3>
-        <Link to="/" className="mt-4 inline-block bg-[#0B3C5D] text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-[#07263b] transition">
+        <Link to="/" className="mt-4 inline-block px-6 py-2.5 text-sm font-bold transition">
           ← Back to Shopping
         </Link>
       </div>
@@ -1948,6 +2179,17 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
 
   const images = (Array.isArray(product.images) ? product.images : []).filter(Boolean);
   if (images.length === 0) images.push(product.image || product.imageUrl || mainImage);
+  const textureImage = product.textureImageUrl || product.texture_image_url || product.textureImage || product.texture_image || '';
+  const ingredientHotspots = Array.isArray(product.ingredientHotspots || product.ingredient_hotspots)
+    ? (product.ingredientHotspots || product.ingredient_hotspots).filter(hotspot =>
+      hotspot && hotspot.x !== null && hotspot.x !== undefined && String(hotspot.x).trim() !== '' &&
+      hotspot.y !== null && hotspot.y !== undefined && String(hotspot.y).trim() !== '' &&
+      Number.isFinite(Number(hotspot.x)) && Number.isFinite(Number(hotspot.y)) &&
+      Number(hotspot.x) >= 0 && Number(hotspot.x) <= 100 &&
+      Number(hotspot.y) >= 0 && Number(hotspot.y) <= 100 &&
+      (hotspot.name || hotspot.title) && (hotspot.description || hotspot.detail)
+    )
+    : [];
   const hasAttributes = product.attributes && Object.keys(product.attributes).length > 0;
   const actualReviewsCount = Number(product.reviewsCount ?? product.reviews_count ?? 0);
   const demoReviewSummary = getDemoReviewSummary(product);
@@ -1958,6 +2200,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
   const youtubeId = getYouTubeId(videoUrl);
   const vimeoId = getVimeoId(videoUrl);
   const imageMedia = images.map(url => ({ type: 'image', url }));
+  if (textureImage) imageMedia.push({ type: 'texture', url: textureImage });
   const videoMedia = hasVideo ? [{
     type: product.videoType === 'uploaded' ? 'uploadedVideo' : 'linkedVideo',
     url: videoUrl
@@ -1972,8 +2215,16 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
     : product.price;
   const promoSavings = promoApplied ? product.price - promoPrice : 0;
 
+  const productDetails = [
+    ['Key Botanical Actives', getProductMetadata(product, ['botanicalActives', 'botanical_actives', 'keyActives', 'key_actives'])],
+    ['How to Use', getProductMetadata(product, ['howToUse', 'how_to_use', 'usageInstructions', 'usage_instructions'])],
+    ['pH & Skin Suitability', getProductMetadata(product, ['phSkinSuitability', 'ph_skin_suitability', 'skinSuitability', 'skin_suitability', 'ph'])],
+    ['Full Ingredient List', getProductMetadata(product, ['fullIngredientList', 'full_ingredient_list', 'ingredients', 'ingredientList', 'ingredient_list'])],
+    ['Description', product.description || '']
+  ].filter(([, content]) => Boolean(content));
+
   return (
-    <div className="container mx-auto max-w-6xl px-4 py-8 overflow-x-hidden text-[#171717]">
+    <div className="velqra-product-detail container mx-auto max-w-6xl px-4 py-8 overflow-x-hidden text-[#171717]">
       <nav className="mb-6 text-sm text-slate-400 break-words">
         <Link to="/" className="hover:text-[#0B3C5D] transition">Home</Link>
         <span className="mx-2">/</span>
@@ -1982,7 +2233,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
         <span className="font-medium text-slate-700 break-words">{product.name}</span>
       </nav>
 
-      <div className="grid w-full grid-cols-1 gap-8 md:grid-cols-2">
+      <div className="grid w-full grid-cols-1 gap-8 md:grid-cols-2" data-reveal>
         <div className="min-w-0 space-y-4">
           <div
             ref={mediaGalleryRef}
@@ -1992,7 +2243,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
             className="flex aspect-square max-h-[28rem] w-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden rounded-2xl border border-slate-200 bg-white shadow-sm touch-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {mediaItems.map((media, index) => (
-              <div key={`${media.type}-${index}`} className="flex h-full w-full shrink-0 snap-center items-center justify-center">
+              <div key={`${media.type}-${index}`} className="relative flex h-full w-full shrink-0 snap-center items-center justify-center">
                 {media.type === 'uploadedVideo' ? (
                   <ProductDetailVideo
                     src={media.url}
@@ -2021,7 +2272,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                 ) : (
                   <img
                     src={media.url}
-                    alt={`${product.name} ${index + 1}`}
+                    alt={media.type === 'texture' ? `${product.name} texture` : `${product.name} ${index + 1}`}
                     loading={index === 0 ? 'eager' : 'lazy'}
                     decoding="async"
                     className="h-full w-full rounded-xl object-contain p-4"
@@ -2031,6 +2282,30 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                     }}
                   />
                 )}
+                {media.type === 'texture' && (
+                  <span className="velqra-texture-label">{t('Texture')}</span>
+                )}
+                {media.type === 'image' && index === 0 && ingredientHotspots.map((hotspot, hotspotIndex) => (
+                  <div
+                    key={`${hotspot.name || hotspot.title}-${hotspotIndex}`}
+                    className="velqra-ingredient-hotspot"
+                    style={{ left: `${Number(hotspot.x)}%`, top: `${Number(hotspot.y)}%` }}
+                  >
+                    <button
+                      type="button"
+                      className="velqra-ingredient-dot"
+                      aria-label={hotspot.name || hotspot.title}
+                      aria-expanded={activeHotspot === hotspotIndex}
+                      onClick={() => setActiveHotspot(current => current === hotspotIndex ? null : hotspotIndex)}
+                    />
+                    {activeHotspot === hotspotIndex && (
+                      <div className="velqra-ingredient-tooltip" role="status">
+                        <strong>{hotspot.name || hotspot.title}</strong>
+                        <span>{hotspot.description || hotspot.detail}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -2048,6 +2323,7 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                   className={`relative h-20 w-20 flex-shrink-0 overflow-hidden rounded-xl border-2 transition ${
                     activeMediaIndex === index ? 'border-[#0B3C5D] shadow-md' : 'border-slate-200 hover:border-slate-400'
                   }`}
+                  aria-label={media.type === 'texture' ? t('Texture') : `${product.name} ${index + 1}`}
                 >
                   {media.type === 'image' ? (
                     <img
@@ -2057,6 +2333,8 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
                       decoding="async"
                       className="h-full w-full bg-white object-contain p-1"
                     />
+                  ) : media.type === 'texture' ? (
+                    <img src={media.url} alt="" className="h-full w-full bg-white object-cover" loading="lazy" />
                   ) : (
                     <span className="flex h-full w-full items-center justify-center bg-slate-900 text-2xl text-white" aria-label="Video">▶</span>
                   )}
@@ -2151,8 +2429,9 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="velqra-product-actions grid grid-cols-1 gap-3 sm:grid-cols-2">
             <button
+              ref={addToCartButtonRef}
               onClick={handleAddToCart}
               disabled={product.stock <= 0 || addingToCart}
               className={`rounded-xl py-3.5 font-bold text-sm uppercase tracking-wide transition ${
@@ -2220,14 +2499,14 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
             </div>
           </div>
 
-          {product.description && (
-            <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-5">
-              <h3 className="font-bold text-sm text-slate-800 mb-2 flex items-center gap-2">
-                <span>📝</span> {t('Description')}
-              </h3>
-              <p className="w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-slate-600">
-                {product.description}
-              </p>
+          {productDetails.length > 0 && (
+            <div className="velqra-product-details">
+              {productDetails.map(([title, content], index) => (
+                <details className="velqra-product-accordion" key={title} open={index === 0}>
+                  <summary>{t(title)}</summary>
+                  <p>{content}</p>
+                </details>
+              ))}
             </div>
           )}
 
@@ -2244,6 +2523,17 @@ const ProductDetailPage = ({ addToCart, openCheckout, onOpenReviews, onReviewSum
           </div>
         </div>
       </div>
+      {showQuickBuy && (
+        <div className="velqra-quick-buy" role="region" aria-label={t('Quick add')}>
+          <div>
+            <strong>{product.name}</strong>
+            <span>{formatCurrency(promoPrice)}</span>
+          </div>
+          <button type="button" onClick={handleAddToCart} disabled={product.stock <= 0 || addingToCart}>
+            {addingToCart ? t('Adding...') : t('Add to Cart')}
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -2875,6 +3165,162 @@ const OrderTracking = () => {
   );
 };
 
+const routineSteps = [
+  {
+    question: 'What is your skin type?',
+    options: ['Oily', 'Dry', 'Combination', 'Sensitive'],
+    metadataKeys: ['skinType', 'skin_type', 'skinTypes', 'skin_types']
+  },
+  {
+    question: 'What is your primary concern?',
+    options: ['Uneven tone', 'Dryness', 'Texture', 'Sensitivity'],
+    metadataKeys: ['skinConcern', 'skin_concern', 'concerns', 'primaryConcern', 'primary_concern']
+  },
+  {
+    question: 'What is your routine goal?',
+    options: ['Balance', 'Hydrate', 'Brighten', 'Clarify'],
+    metadataKeys: ['routineGoal', 'routine_goal', 'goals', 'benefits']
+  }
+];
+
+const routineOptionTerms = {
+  Oily: ['oily', 'oil control'],
+  Dry: ['dry', 'dry skin'],
+  Combination: ['combination', 'combination skin'],
+  Sensitive: ['sensitive', 'sensitivity'],
+  'Uneven tone': ['uneven tone', 'uneven skin tone'],
+  Dryness: ['dryness', 'dry'],
+  Texture: ['texture', 'skin texture'],
+  Sensitivity: ['sensitivity', 'sensitive'],
+  Balance: ['balance', 'balancing'],
+  Hydrate: ['hydrate', 'hydration', 'moisturize', 'moisturise'],
+  Brighten: ['brighten', 'brightening'],
+  Clarify: ['clarify', 'clarifying']
+};
+
+const RoutineFinder = ({ products, t, formatCurrency }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [selections, setSelections] = useState([]);
+  const completed = selections.length === routineSteps.length;
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = event => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  const matchingProducts = completed
+    ? products.filter(product => routineSteps.every((step, index) => {
+      const metadata = getProductMetadata(product, step.metadataKeys);
+      const searchableText = [
+        getSearchableProductText(product),
+        product.description || '',
+        metadata
+      ].join(' ').toLowerCase();
+      const terms = routineOptionTerms[selections[index]] || [selections[index].toLowerCase()];
+      return terms.some(term => searchableText.includes(term));
+    }))
+    : [];
+
+  const resetFinder = () => {
+    setStepIndex(0);
+    setSelections([]);
+  };
+
+  return (
+    <>
+      <button type="button" className="velqra-routine-trigger" onClick={() => setIsOpen(true)}>
+        {t('Find Your Product')}
+      </button>
+      {isOpen && createPortal(
+        <div className="velqra-finder-backdrop" onMouseDown={event => {
+          if (event.target === event.currentTarget) setIsOpen(false);
+        }}>
+          <section className="velqra-finder-modal" role="dialog" aria-modal="true" aria-labelledby="routine-finder-title">
+            <button type="button" className="velqra-finder-close" aria-label={t('Close')} onClick={() => setIsOpen(false)}>×</button>
+            <p className="velqra-finder-eyebrow">{t('A considered routine')}</p>
+            <h2 id="routine-finder-title">{t('Find your skin routine')}</h2>
+            <div className="velqra-finder-progress" aria-hidden="true">
+              <span style={{ width: `${completed ? 100 : ((stepIndex + 1) / routineSteps.length) * 100}%` }} />
+            </div>
+            {completed ? (
+              <>
+                <p className="velqra-finder-step">{t('Selected for your preferences')}</p>
+                {matchingProducts.length > 0 ? (
+                  <div className="velqra-finder-results">
+                    {matchingProducts.map(product => (
+                      <Link key={product._id} to={`/product/${product._id}`} onClick={() => setIsOpen(false)}>
+                        <img src={getProductDisplayImage(product)} alt="" loading="lazy" />
+                        <span>{product.name}</span>
+                        <strong>{formatCurrency(product.price)}</strong>
+                      </Link>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="velqra-finder-empty">
+                    {t('No exact match in the current collection. Browse the products to explore the full range.')}
+                  </p>
+                )}
+                <button type="button" className="velqra-finder-back" onClick={resetFinder}>{t('Start again')}</button>
+              </>
+            ) : (
+              <>
+                <p className="velqra-finder-step">{t('Step {step} of {total}', { step: stepIndex + 1, total: routineSteps.length })}</p>
+                <h3>{t(routineSteps[stepIndex].question)}</h3>
+                <div className="velqra-finder-options">
+                  {routineSteps[stepIndex].options.map(option => (
+                    <button
+                      type="button"
+                      key={option}
+                      aria-pressed={selections[stepIndex] === option}
+                      onClick={() => setSelections(current => {
+                        const next = current.slice(0, stepIndex);
+                        next[stepIndex] = option;
+                        return next;
+                      })}
+                    >
+                      {t(option)}
+                    </button>
+                  ))}
+                </div>
+                {stepIndex > 0 && (
+                  <button type="button" className="velqra-finder-back" onClick={() => setStepIndex(current => current - 1)}>
+                    {t('Back')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="velqra-finder-next"
+                  disabled={!selections[stepIndex]}
+                  onClick={() => {
+                    if (stepIndex === routineSteps.length - 1) {
+                      setSelections(current => current.slice(0, routineSteps.length));
+                    } else {
+                      setStepIndex(current => current + 1);
+                    }
+                  }}
+                >
+                  {stepIndex === routineSteps.length - 1 ? t('Find your routine') : t('Continue')}
+                </button>
+              </>
+            )}
+          </section>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+};
+
 // =============================================
 // MAIN APP COMPONENT
 // =============================================
@@ -2897,6 +3343,7 @@ export default function App() {
   const t = (key, values) => translate(language, key, values);
   const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
+  const [catalogLoading, setCatalogLoading] = useState(() => getCachedProducts().length === 0);
   const [activeReviewsProduct, setActiveReviewsProduct] = useState(null);
   const [productStockDrafts, setProductStockDrafts] = useState({});
   const [stockUpdatingId, setStockUpdatingId] = useState(null);
@@ -2906,6 +3353,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isHeaderSearchOpen, setIsHeaderSearchOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isCartDrawerOpen, setIsCartDrawerOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState('All');
   const [loading, setLoading] = useState(false);
   const [cartLoading, setCartLoading] = useState(false);
@@ -2919,6 +3367,15 @@ export default function App() {
   useEffect(() => {
     captureTrafficAttribution(location.search, location.pathname);
   }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (location.pathname !== '/' || location.hash !== '#products') return undefined;
+
+    const frameId = window.requestAnimationFrame(() => {
+      document.getElementById('products')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [location.pathname, location.hash]);
 
   useEffect(() => {
     localStorage.setItem('velqra_language', language);
@@ -3003,6 +3460,8 @@ export default function App() {
   const openCart = () => {
     if (cartOpenRef.current) return;
     cartOpenRef.current = true;
+    setIsHeaderSearchOpen(false);
+    setIsMobileMenuOpen(false);
     navigate(`${location.pathname}${location.search}${location.hash}`, {
       state: { ...(location.state || {}), velqraCartOpen: true }
     });
@@ -3029,6 +3488,82 @@ export default function App() {
     document.body.scrollTop = 0;
     setIsHeaderSearchOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!isCartOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isCartOpen]);
+
+  useEffect(() => {
+    if (isCartDrawerOpen) {
+      const previousOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      const handleKeyDown = event => {
+        if (event.key === 'Escape') setIsCartDrawerOpen(false);
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.body.style.overflow = previousOverflow;
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+    return undefined;
+  }, [isCartDrawerOpen]);
+
+  useEffect(() => {
+    const revealElements = document.querySelectorAll('[data-reveal]');
+    const revealAll = () => revealElements.forEach(element => {
+      element.classList.add('is-visible');
+      element.classList.remove('reveal-ready');
+    });
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+        !('IntersectionObserver' in window)) {
+      revealAll();
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-visible');
+          entry.target.classList.remove('reveal-ready');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.08 });
+
+    const observeRevealElement = element => {
+      if (!(element instanceof HTMLElement) || !element.matches('[data-reveal]') ||
+          element.classList.contains('reveal-ready') || element.classList.contains('is-visible')) return;
+      element.classList.add('reveal-ready');
+      const bounds = element.getBoundingClientRect();
+      if (bounds.top < window.innerHeight && bounds.bottom > 0) {
+        element.classList.add('is-visible');
+        element.classList.remove('reveal-ready');
+      } else {
+        observer.observe(element);
+      }
+    };
+
+    revealElements.forEach(observeRevealElement);
+    const mutationObserver = new MutationObserver(mutations => {
+      mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+        if (!(node instanceof HTMLElement)) return;
+        observeRevealElement(node);
+        node.querySelectorAll('[data-reveal]').forEach(observeRevealElement);
+      }));
+    });
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      observer.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [location.pathname, products.length, searchQuery, activeCategory, language]);
 
   useEffect(() => {
     const syncUserAuthState = () => {
@@ -3649,6 +4184,7 @@ export default function App() {
 
 
   const fetchProducts = async () => {
+    setCatalogLoading(getCachedProducts().length === 0);
     try {
       if (!isSupabaseConfigured) {
         showToast('Add Supabase URL and anon key to load products', 'error');
@@ -3665,6 +4201,8 @@ export default function App() {
       localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(productsData));
     } catch (err) {
       showToast('Failed to load products from Supabase', 'error');
+    } finally {
+      setCatalogLoading(false);
     }
   };
 
@@ -4487,7 +5025,7 @@ export default function App() {
     }
   };
 
-  const addToCart = async (product) => {
+  const addToCart = async (product, { openDrawer = true } = {}) => {
     const stock = Number(product.stock);
     if (!Number.isFinite(stock) || stock <= 0) {
       showToast('Out of stock!', 'error');
@@ -4510,7 +5048,7 @@ export default function App() {
           if (!data.success) throw new Error(data.message || 'Unable to add product to cart');
           setCart(normalizeCart(data.cart?.items || []));
         });
-        showToast('✅ Added to your saved cart', 'success');
+        if (openDrawer) setIsCartDrawerOpen(true);
         return true;
       } catch (cartError) {
         showToast(cartError.response?.data?.message || 'Could not add product to cart', 'error');
@@ -4538,7 +5076,7 @@ export default function App() {
       }
       return [...prev, { ...product, qty: 1 }];
     });
-    showToast('✅ Added to cart', 'success');
+    if (openDrawer) setIsCartDrawerOpen(true);
     return true;
   };
 
@@ -4600,16 +5138,26 @@ export default function App() {
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const selectedCurrencyRate = currency === 'INR' ? 1 : Number(exchangeRates[currency]);
   const selectedCurrencyAvailable = Number.isFinite(selectedCurrencyRate) && selectedCurrencyRate > 0;
-  const filteredProducts = (Array.isArray(products) ? products : []).filter(product => {
-    const searchableText = [product?.name, product?.category, product?.brand]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    const matchSearch = searchableText.includes(normalizedSearch);
-    const categoryKey = String(product?.category || '').toLowerCase().replace(/[\s_-]+/g, '');
-    const matchCategory = activeCategory === 'All' || categoryKey === 'facewash';
-    return matchSearch && matchCategory;
-  });
+  const filteredProducts = (Array.isArray(products) ? products : [])
+    .filter(product => {
+      const matchSearch = matchesProductSearch(product, normalizedSearch);
+      const categoryKey = String(product?.category || '').toLowerCase().replace(/[\s_-]+/g, '');
+      const matchCategory = activeCategory === 'All' || categoryKey === 'facewash';
+      return matchSearch && matchCategory;
+    })
+    .sort((left, right) =>
+      getProductSearchScore(left, normalizedSearch) - getProductSearchScore(right, normalizedSearch)
+    );
+  const searchSuggestions = filteredProducts.slice(0, 5);
+  const submitHeaderSearch = () => {
+    setIsHeaderSearchOpen(false);
+    setIsMobileMenuOpen(false);
+    if (location.pathname !== '/') {
+      navigate('/#products');
+      return;
+    }
+    document.getElementById('products')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   const totalCartItems = cart.reduce((sum, item) => sum + item.qty, 0);
   const totalCartPrice = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
   const totalSavings = cart.reduce((sum, item) => {
@@ -4742,7 +5290,7 @@ export default function App() {
         </div>
       )}
 
-      {!isUserAuthPage && (
+      {!isUserAuthPage && !isCartOpen && (
       <>
       <div className="announcement-bar" role="region" aria-label="VELQRA announcement">
         <div className="announcement-track">
@@ -4778,7 +5326,7 @@ export default function App() {
         </div>
       </div>
       <header className="velqra-main-header sticky top-[30px] z-[70] flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3 shadow-sm backdrop-blur-md sm:px-6 sm:py-4">
-        <div className={`flex items-center gap-3 sm:gap-5 ${location.pathname === '/' ? 'pl-12 sm:pl-0' : ''}`}>
+        <div className={`flex items-center gap-3 sm:gap-5 ${location.pathname === '/' ? 'pl-12 md:pl-0' : ''}`}>
           {location.pathname !== '/' && (
             <button type="button" onClick={() => navigate(-1)} className="grid h-9 w-9 place-items-center text-neutral-900" aria-label="Go back">
               <svg className="h-7 w-7 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="1.8">
@@ -4793,6 +5341,17 @@ export default function App() {
             </span>
           </Link>
         </div>
+
+        <HeaderSearchForm
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          suggestions={searchSuggestions}
+          onSubmit={submitHeaderSearch}
+          formatPrice={formatPrice}
+          t={t}
+          className="velqra-desktop-search max-w-xl flex-1 lg:mx-5"
+        />
+
         <div className="hidden items-center gap-2 md:flex">
           {isUserLoggedIn ? (
             <div className="flex items-center gap-2">
@@ -4829,16 +5388,17 @@ export default function App() {
             </button>
           )}
           <button
+            type="button"
             onClick={openCart}
-            className="relative flex items-center gap-2 bg-neutral-900 border border-neutral-700 px-4 py-2 rounded-full hover:border-amber-400 transition"
-            aria-label="Open shopping bag"
+            className="velqra-bag-button relative flex items-center gap-2 rounded-full border px-4 py-2 transition"
+            aria-label={`${t('BAG')}${totalCartItems > 0 ? `, ${totalCartItems}` : ''}`}
           >
-            <svg className="w-5 h-5 stroke-current text-amber-400 fill-none" viewBox="0 0 24 24" strokeWidth="2">
+            <svg aria-hidden="true" className="h-5 w-5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="1.8">
               <path strokeLinecap="round" strokeLinejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
             </svg>
             <span className="text-sm font-medium">{t('BAG').toUpperCase()}</span>
             {totalCartItems > 0 && (
-              <span className="bg-amber-400 text-black text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center">
+              <span className="velqra-bag-count">
                 {totalCartItems}
               </span>
             )}
@@ -4851,29 +5411,30 @@ export default function App() {
           />
         </div>
 
-        {location.pathname === '/' && (
-          <button
-            type="button"
-            onClick={() => {
-              setIsHeaderSearchOpen(open => !open);
-              setIsMobileMenuOpen(false);
-            }}
-            aria-label={t(isHeaderSearchOpen ? 'Close search' : 'Search products')}
-            aria-expanded={isHeaderSearchOpen}
-            aria-controls="header-catalog-search"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-800 transition hover:border-[#173b32] hover:text-[#173b32] focus:outline-none focus:ring-2 focus:ring-[#173b32]"
-          >
-            <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="10.8" cy="10.8" r="6.8" />
-              <path strokeLinecap="round" d="m16 16 4.5 4.5" />
-            </svg>
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => {
+            setIsHeaderSearchOpen(open => !open);
+            setIsMobileMenuOpen(false);
+          }}
+          aria-label={t(isHeaderSearchOpen ? 'Close search' : 'Search products')}
+          aria-expanded={isHeaderSearchOpen}
+          aria-controls="mobile-catalog-search"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-800 transition hover:border-[#173b32] hover:text-[#173b32] focus:outline-none focus:ring-2 focus:ring-[#173b32] lg:hidden"
+        >
+          <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="10.8" cy="10.8" r="6.8" />
+            <path strokeLinecap="round" d="m16 16 4.5 4.5" />
+          </svg>
+        </button>
 
         {location.pathname === '/' && (
           <button
             type="button"
-            onClick={() => setIsMobileMenuOpen((open) => !open)}
+            onClick={() => {
+              setIsMobileMenuOpen(open => !open);
+              setIsHeaderSearchOpen(false);
+            }}
             className="absolute left-3 top-3 z-[45] grid h-10 w-10 place-items-center rounded-full border border-neutral-300 bg-white text-neutral-900 md:hidden"
             aria-label={isMobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={isMobileMenuOpen}
@@ -4907,6 +5468,16 @@ export default function App() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
+              </div>
+              <div className="shrink-0 border-b border-[#e1e0da] px-6 py-3">
+                <LocaleControls
+                  compact
+                  className="w-full justify-between"
+                  language={language}
+                  currency={currency}
+                  onLanguageChange={setLanguage}
+                  onCurrencyChange={setCurrency}
+                />
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
                 {[
@@ -5015,48 +5586,27 @@ export default function App() {
           </>
         )}
 
-        {location.pathname === '/' && (
+        {isHeaderSearchOpen && (
           <div
-            id="header-catalog-search"
-            className={`${isHeaderSearchOpen ? 'block' : 'hidden'} absolute left-0 right-0 top-full z-[71] border-y border-neutral-200 bg-white px-4 pb-3 pt-2 shadow-lg md:left-auto md:right-0 md:w-[min(32rem,calc(100vw-2rem))] md:rounded-b-xl md:border-x`}
+            id="mobile-catalog-search"
+            className="absolute left-0 right-0 top-full z-[71] border-y border-neutral-200 bg-white/95 px-4 py-3 shadow-lg backdrop-blur-md lg:hidden"
           >
-            {isHeaderSearchOpen && (
-              <form
-                onSubmit={event => {
-                  event.preventDefault();
-                  setIsHeaderSearchOpen(false);
-                }}
-                className="flex items-center gap-2"
-              >
-                <div className="relative min-w-0 flex-1">
-                  <svg aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="10.8" cy="10.8" r="6.8" />
-                    <path strokeLinecap="round" d="m16 16 4.5 4.5" />
-                  </svg>
-                  <input
-                    autoFocus
-                    type="search"
-                    value={searchQuery}
-                    onChange={event => setSearchQuery(event.target.value)}
-                    placeholder={t('Search products, brands, categories...')}
-                    aria-label={t('Search products, brands, categories...')}
-                    className="h-11 w-full rounded-lg border border-neutral-300 bg-[#fafaf8] py-2.5 pl-10 pr-3 text-sm text-neutral-900 outline-none transition focus:border-[#173b32] focus:ring-2 focus:ring-[#173b32]/15"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsHeaderSearchOpen(false)}
-                  aria-label={t('Close search')}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-neutral-200 text-neutral-700"
-                >
-                  <span aria-hidden="true" className="text-xl leading-none">×</span>
-                </button>
-              </form>
-            )}
+            <HeaderSearchForm
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              suggestions={searchSuggestions}
+              onSubmit={submitHeaderSearch}
+              formatPrice={formatPrice}
+              t={t}
+              autoFocus
+              className="w-full"
+            />
           </div>
         )}
+
       </header>
 
+      {!isMobileMenuOpen && (
       <div className="flex justify-end border-b border-neutral-200 bg-white px-4 py-2 md:hidden">
         <LocaleControls
           compact
@@ -5066,6 +5616,7 @@ export default function App() {
           onCurrencyChange={setCurrency}
         />
       </div>
+      )}
 
       {(currency !== 'INR' || exchangeRateStatus === 'stale' || exchangeRateStatus === 'partial') && (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900" role="status">
@@ -5091,7 +5642,7 @@ export default function App() {
       )}
 
       {/* MAIN CONTENT */}
-      {!isUserAuthPage && (
+      {!isUserAuthPage && !isCartOpen && (
       <div className="flex-1 bg-[#f1f1ef] text-[#171717]">
         <Routes>
           <Route path="/" element={
@@ -5100,17 +5651,23 @@ export default function App() {
                 return (
                   <main className="bg-[#f1f1ef] text-[#171717]">
                     {!normalizedSearch && (
-                    <section
-                      className="velqra-home-hero"
-                    >
-                      <div>
-                        <p>{t('PURE BOTANICAL SCIENCE')}</p>
-                        <h1>{t('VELQRA BOTANICAL COLLECTION')}</h1>
-                        <span>{t('Pure Botanicals Science for Radiant & Healthy Skin')}</span>
-                      </div>
-                    </section>
+                      <section className="velqra-home-hero">
+                        <video
+                          className="velqra-hero-image"
+                          src="/banner-video.mp4"
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          preload="metadata"
+                          aria-hidden="true"
+                        />
+                        <div className="velqra-home-hero-cta">
+                          <RoutineFinder products={products} t={t} formatCurrency={formatPrice} />
+                        </div>
+                      </section>
                     )}
-                    <section className="max-w-7xl mx-auto px-4 pb-8 pt-4 sm:px-6 sm:py-14">
+                    <section id="products" className="scroll-mt-40 max-w-7xl mx-auto px-4 pb-8 pt-4 sm:px-6 sm:py-14" data-reveal>
                       <div className="mb-5 rounded-xl border border-[#d9d9d4] bg-white p-3 sm:mb-8 sm:p-5">
                         <div role="group" aria-label={t('Category filter')} className="flex flex-wrap items-center gap-2">
                             {[
@@ -5137,7 +5694,18 @@ export default function App() {
                           {searchQuery && <span className="max-w-full truncate">{t('Search:')} {searchQuery}</span>}
                         </div>
                       </div>
-                      {filteredProducts.length === 0 ? (
+                      {catalogLoading && products.length === 0 ? (
+                        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4" aria-label={t('Loading products')} aria-busy="true">
+                          {Array.from({ length: 4 }).map((_, index) => (
+                            <div key={index} className="velqra-product-skeleton velqra-product-grid-card" aria-hidden="true">
+                              <div className="velqra-skeleton-image" />
+                              <div className="velqra-skeleton-line velqra-skeleton-short" />
+                              <div className="velqra-skeleton-line" />
+                              <div className="velqra-skeleton-line velqra-skeleton-price" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : filteredProducts.length === 0 ? (
                         <div className="rounded-lg border border-neutral-200 bg-white py-16 text-center">
                           <p className="font-serif text-2xl">
                             {t(products.length === 0 ? 'No products available' : 'No products match your filters')}
@@ -5154,7 +5722,7 @@ export default function App() {
                             const rating = actualReviewsCount ? Number(product.rating || 0) : demoReviewSummary.rating;
                             const reviewsCount = actualReviewsCount || demoReviewSummary.reviewsCount;
                             return (
-                              <div key={product._id} className="velqra-product-grid-card group">
+                              <div key={product._id} className="velqra-product-grid-card group" data-reveal>
                                 <Link to={`/product/${product._id}`} className="block">
                                   <div className="velqra-product-card-media relative">
                                     {discount > 0 && <span className="velqra-product-discount">{discount}% OFF</span>}
@@ -6209,20 +6777,92 @@ export default function App() {
         </div>
       )}
 
+      {isCartDrawerOpen && !isCartOpen && (
+        <div
+          className="velqra-drawer-backdrop"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) setIsCartDrawerOpen(false);
+          }}
+        >
+          <aside
+            className="velqra-cart-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cart-drawer-title"
+          >
+            <div className="velqra-cart-drawer-header">
+              <div>
+                <p>{t('Your Cart')}</p>
+                <h2 id="cart-drawer-title">{t('Added to your bag')}</h2>
+              </div>
+              <button type="button" aria-label={t('Continue Shopping')} onClick={() => setIsCartDrawerOpen(false)}>×</button>
+            </div>
+            {cartLoading ? (
+              <div className="velqra-cart-drawer-empty" role="status">{t('Loading your saved cart...')}</div>
+            ) : cart.length === 0 ? (
+              <div className="velqra-cart-drawer-empty">{t('Cart is empty')}</div>
+            ) : (
+              <>
+                <div className="velqra-cart-drawer-items">
+                  {cart.map(item => (
+                    <article className="velqra-cart-drawer-item" key={getCartItemKey(item)}>
+                      <img src={getProductDisplayImage(item)} alt={item.name} loading="lazy" />
+                      <div className="velqra-cart-drawer-item-info">
+                        <h3>{item.name}</h3>
+                        {item.selectedAttributes && Object.keys(item.selectedAttributes).length > 0 && (
+                          <p>{Object.entries(item.selectedAttributes).map(([key, value]) => `${key}: ${value}`).join(' · ')}</p>
+                        )}
+                        <strong>{formatPrice(item.price)}</strong>
+                        <div className="velqra-cart-drawer-quantity" aria-label={t('Quantity')}>
+                          <button type="button" aria-label={t('Decrease quantity')} onClick={() => updateQty(item, -1)}>−</button>
+                          <span>{item.qty}</span>
+                          <button type="button" aria-label={t('Increase quantity')} onClick={() => updateQty(item, 1)}>+</button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+                <div className="velqra-cart-drawer-footer">
+                  <div className="velqra-cart-drawer-subtotal">
+                    <span>{t('Subtotal')}</span>
+                    <strong>{formatPrice(totalCartPrice)}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={cartLoading}
+                    onClick={() => {
+                      setIsCartDrawerOpen(false);
+                      openCart();
+                      setCheckoutOpen(true);
+                    }}
+                  >
+                    {t('Proceed to Secure Checkout')}
+                  </button>
+                  <p>{t('Secure Checkout')}</p>
+                </div>
+              </>
+            )}
+          </aside>
+        </div>
+      )}
+
       {/* CART SIDEBAR */}
       {isCartOpen && (
         <div
-          className="fixed inset-0 bg-slate-900/60 z-50 flex justify-end backdrop-blur-sm"
+          className="fixed inset-0 z-[110] flex bg-[#faf9f6]"
           onClick={closeCart}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('Cart')}
         >
           <div
-            className="velqra-cart-panel bg-white w-full max-w-md h-full shadow-2xl p-6 flex flex-col text-slate-900"
+            className="velqra-cart-panel flex h-full w-full max-w-none flex-col bg-[#faf9f6] p-6 text-slate-900"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex-1 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-                <h2 className="relative top-1 text-lg font-black text-[#0B3C5D]">🛒 {t('Cart')}</h2>
-                <button onClick={closeCart} className="text-gray-400 hover:text-black font-bold text-lg">
+              <div className="mb-4 flex items-center justify-between border-b border-[#e3e0d8] pb-4">
+                <h2 className="relative top-1 text-lg font-black text-[#2e473b]">🛒 {t('Cart')}</h2>
+                <button type="button" onClick={closeCart} aria-label={t('Continue Shopping')} className="text-gray-400 hover:text-black font-bold text-lg">
                   ✕
                 </button>
               </div>
@@ -6483,7 +7123,7 @@ export default function App() {
       )}
 
       {/* FOOTER */}
-      {!isUserAuthPage && (
+      {!isUserAuthPage && !isCartOpen && (
       <footer className="border-t border-neutral-800 bg-neutral-950 py-12 px-6 mt-20">
         <div className="max-w-6xl mx-auto grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-5">
           <div>
@@ -6520,6 +7160,9 @@ export default function App() {
             <a href="tel:+919050054177" className="mt-2 block text-xs text-neutral-400 hover:text-amber-400">
               +91 90500 54177
             </a>
+            <Link to="/orders" className="velqra-footer-track-order mt-4 inline-flex items-center justify-center rounded-full px-4 py-2 text-xs font-bold uppercase tracking-wide transition focus:outline-none focus:ring-2 focus:ring-[#2e473b] focus:ring-offset-2">
+              {t('Track Order')}
+            </Link>
             <div className="mt-4 border-t border-neutral-800 pt-4">
               <h5 className="mb-2 text-xs font-bold uppercase text-neutral-300">WEBSITE DEVELOPMENT</h5>
               <p className="mb-2 text-xs text-neutral-400">Need a website for your business?</p>

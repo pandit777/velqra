@@ -1,14 +1,14 @@
 import React from 'react';
 import { CURRENCY_OPTIONS, LANGUAGE_OPTIONS, useLocalization } from './localization';
 
-export default function LocaleControls({ language, currency, onLanguageChange, onCurrencyChange, compact = false }) {
+export default function LocaleControls({ language, currency, onLanguageChange, onCurrencyChange, compact = false, className = '' }) {
   const { t } = useLocalization();
   const controlClass = compact
     ? 'w-[76px] px-1.5 py-1.5 text-[10px]'
     : 'min-w-[94px] px-2.5 py-2 text-xs';
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className={`flex items-center gap-1.5 ${className}`}>
       <label>
         <span className="sr-only">{t('Language')}</span>
         <select
