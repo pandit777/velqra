@@ -39,6 +39,34 @@ const messages = {
   'ORDER': { hi: 'ऑर्डर करें', pa: 'ਆਰਡਰ ਕਰੋ', te: 'ఆర్డర్ చేయండి', bn: 'অর্ডার করুন' },
   'Search products, brands, categories...': { hi: 'प्रोडक्ट, ब्रांड, कैटेगरी खोजें...', pa: 'ਉਤਪਾਦ, ਬ੍ਰਾਂਡ, ਸ਼੍ਰੇਣੀ ਖੋਜੋ...', te: 'ఉత్పత్తులు, బ్రాండ్లు, వర్గాలను వెతకండి...', bn: 'পণ্য, ব্র্যান্ড, বিভাগ খুঁজুন...' },
   'Search products': { hi: 'प्रोडक्ट खोजें', pa: 'ਉਤਪਾਦ ਖੋਜੋ', te: 'ఉత్పత్తులను వెతకండి', bn: 'পণ্য খুঁজুন' },
+  'Find your routine': { hi: 'अपनी स्किन रूटीन खोजें', pa: 'ਆਪਣੀ ਸਕਿਨ ਰੂਟੀਨ ਲੱਭੋ', te: 'మీ చర్మ సంరక్షణ రొటీన్‌ను కనుగొనండి', bn: 'আপনার স্কিন রুটিন খুঁজুন' },
+  'Find your skin routine': { hi: 'अपनी स्किन रूटीन खोजें', pa: 'ਆਪਣੀ ਸਕਿਨ ਰੂਟੀਨ ਲੱਭੋ', te: 'మీ చర్మ సంరక్షణ రొటీన్‌ను కనుగొనండి', bn: 'আপনার স্কিন রুটিন খুঁজুন' },
+  'A considered routine': { hi: 'आपकी त्वचा के लिए सोच-समझकर बनाई गई रूटीन', pa: 'ਤੁਹਾਡੀ ਚਮੜੀ ਲਈ ਸੋਚ-ਸਮਝ ਕੇ ਬਣਾਈ ਰੂਟੀਨ', te: 'మీ చర్మం కోసం ఆలోచించి రూపొందించిన రొటీన్', bn: 'আপনার ত্বকের জন্য ভেবেচিন্তে তৈরি রুটিন' },
+  'Step {step} of {total}': { hi: '{total} में से चरण {step}', pa: '{total} ਵਿੱਚੋਂ ਕਦਮ {step}', te: '{total}లో {step}వ దశ', bn: '{total}-এর মধ্যে ধাপ {step}' },
+  'What is your skin type?': { hi: 'आपकी त्वचा का प्रकार क्या है?', pa: 'ਤੁਹਾਡੀ ਚਮੜੀ ਦੀ ਕਿਸਮ ਕੀ ਹੈ?', te: 'మీ చర్మ రకం ఏమిటి?', bn: 'আপনার ত্বকের ধরন কী?' },
+  'What is your primary concern?': { hi: 'आपकी मुख्य चिंता क्या है?', pa: 'ਤੁਹਾਡੀ ਮੁੱਖ ਚਿੰਤਾ ਕੀ ਹੈ?', te: 'మీ ప్రధాన చర్మ సమస్య ఏమిటి?', bn: 'আপনার প্রধান উদ্বেগ কী?' },
+  'What is your routine goal?': { hi: 'आपकी रूटीन का लक्ष्य क्या है?', pa: 'ਤੁਹਾਡੀ ਰੂਟੀਨ ਦਾ ਟੀਚਾ ਕੀ ਹੈ?', te: 'మీ రొటీన్ లక్ష్యం ఏమిటి?', bn: 'আপনার রুটিনের লক্ষ্য কী?' },
+  'Oily': { hi: 'तैलीय', pa: 'ਤੇਲੀਆ', te: 'జిడ్డు చర్మం', bn: 'তৈলাক্ত' },
+  'Dry': { hi: 'रूखी', pa: 'ਖੁਸ਼ਕ', te: 'పొడి చర్మం', bn: 'শুষ্ক' },
+  'Combination': { hi: 'मिश्रित', pa: 'ਮਿਸ਼ਰਤ', te: 'మిశ్రమ చర్మం', bn: 'মিশ্র' },
+  'Sensitive': { hi: 'संवेदनशील', pa: 'ਸੰਵੇਦਨਸ਼ੀਲ', te: 'సున్నితమైన చర్మం', bn: 'সংবেদনশীল' },
+  'Uneven tone': { hi: 'असमान त्वचा रंग', pa: 'ਅਸਮਾਨ ਚਮੜੀ ਦਾ ਰੰਗ', te: 'అసమాన చర్మపు రంగు', bn: 'অসম ত্বকের রং' },
+  'Dryness': { hi: 'रूखापन', pa: 'ਖੁਸ਼ਕੀ', te: 'పొడిబారడం', bn: 'শুষ্কতা' },
+  'Texture': { hi: 'त्वचा की बनावट', pa: 'ਚਮੜੀ ਦੀ ਬਣਤਰ', te: 'చర్మ ఆకృతి', bn: 'ত্বকের গঠন' },
+  'Sensitivity': { hi: 'संवेदनशीलता', pa: 'ਸੰਵੇਦਨਸ਼ੀਲਤਾ', te: 'సున్నితత్వం', bn: 'সংবেদনশীলতা' },
+  'Balance': { hi: 'संतुलन', pa: 'ਸੰਤੁਲਨ', te: 'సమతుల్యత', bn: 'ভারসাম্য' },
+  'Hydrate': { hi: 'नमी', pa: 'ਨਮੀ', te: 'తేమ', bn: 'আর্দ্রতা' },
+  'Brighten': { hi: 'निखार', pa: 'ਨਿਖਾਰ', te: 'కాంతి', bn: 'উজ্জ্বলতা' },
+  'Clarify': { hi: 'साफ़ त्वचा', pa: 'ਸਾਫ਼ ਚਮੜੀ', te: 'శుభ్రమైన చర్మం', bn: 'পরিষ্কার ত্বক' },
+  'Selected for your preferences': { hi: 'आपकी पसंद के अनुसार', pa: 'ਤੁਹਾਡੀ ਪਸੰਦ ਅਨੁਸਾਰ', te: 'మీ ప్రాధాన్యతలకు అనుగుణంగా', bn: 'আপনার পছন্দ অনুযায়ী' },
+  'No exact match in the current collection. Browse the products to explore the full range.': {
+    hi: 'मौजूदा कलेक्शन में सटीक मेल नहीं मिला। पूरी रेंज देखने के लिए प्रोडक्ट ब्राउज़ करें।',
+    pa: 'ਮੌਜੂਦਾ ਕਲੈਕਸ਼ਨ ਵਿੱਚ ਸਹੀ ਮੇਲ ਨਹੀਂ ਮਿਲਿਆ। ਪੂਰੀ ਰੇਂਜ ਦੇਖਣ ਲਈ ਉਤਪਾਦ ਬ੍ਰਾਊਜ਼ ਕਰੋ।',
+    te: 'ప్రస్తుత కలెక్షన్‌లో ఖచ్చితమైన సరిపోలిక లేదు. పూర్తి శ్రేణిని చూడటానికి ఉత్పత్తులను బ్రౌజ్ చేయండి.',
+    bn: 'বর্তমান কালেকশনে সঠিক মিল পাওয়া যায়নি। পুরো রেঞ্জ দেখতে পণ্যগুলো দেখুন।'
+  },
+  'Start again': { hi: 'फिर से शुरू करें', pa: 'ਦੁਬਾਰਾ ਸ਼ੁਰੂ ਕਰੋ', te: 'మళ్లీ ప్రారంభించండి', bn: 'আবার শুরু করুন' },
+  'Back': { hi: 'वापस', pa: 'ਵਾਪਸ', te: 'వెనక్కి', bn: 'পেছনে' },
   'Filter by category': { hi: 'कैटेगरी से फ़िल्टर करें', pa: 'ਸ਼੍ਰੇਣੀ ਅਨੁਸਾਰ ਫਿਲਟਰ ਕਰੋ', te: 'వర్గం ద్వారా ఫిల్టర్ చేయండి', bn: 'বিভাগ অনুযায়ী ফিল্টার করুন' },
   'Category filter': { hi: 'कैटेगरी फ़िल्टर', pa: 'ਸ਼੍ਰੇਣੀ ਫਿਲਟਰ', te: 'వర్గం ఫిల్టర్', bn: 'বিভাগ ফিল্টার' },
   'All': { hi: 'सभी', pa: 'ਸਾਰੇ', te: 'అన్నీ', bn: 'সব' },
@@ -194,6 +222,14 @@ const messages = {
 export const translate = (language, key, values = {}) => {
   const template = messages[key]?.[language] || key;
   return template.replace(/\{(\w+)\}/g, (_, name) => values[name] ?? `{${name}}`);
+};
+
+export const getLocalizedProductDescription = (product, language) => {
+  const translations = product?.descriptionTranslations || product?.description_translations || {};
+  const translatedDescription = translations[language];
+  return typeof translatedDescription === 'string' && translatedDescription.trim()
+    ? translatedDescription
+    : String(product?.description || '');
 };
 
 export const formatCurrency = (amount, language, currency, rates) => {

@@ -166,14 +166,20 @@ create table if not exists public.product_reviews (
   order_id uuid references public.orders (id) on delete set null,
   rating smallint not null check (rating between 1 and 5),
   review_text text not null default '',
+  image_url text,
+  image_path text,
   video_url text,
   video_path text,
   is_verified_purchase boolean not null default false,
   created_at timestamptz not null default now()
 );
 
+alter table public.product_reviews
+  add column if not exists image_url text,
+  add column if not exists image_path text;
+
 create index if not exists product_reviews_product_created_at_idx
-  on public.product_reviews (product_id, created_at desc);
+  on public.product_reviews (product_id, created_at desc, id desc);
 
 create table if not exists public.return_requests (
   id uuid primary key default gen_random_uuid(),
