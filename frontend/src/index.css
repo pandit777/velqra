@@ -2295,12 +2295,22 @@ body {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
+  opacity: 0;
+}
+
+.velqra-home-hero .velqra-routine-trigger.is-visible {
+  animation: velqra-home-cta-fade-in 3s ease-in-out both;
 }
 
 .velqra-home-hero .velqra-routine-trigger:hover {
   border-color: #faf9f6;
   color: #fff;
   background: var(--velqra-forest);
+}
+
+@keyframes velqra-home-cta-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .velqra-announcement-bar {
@@ -2319,6 +2329,14 @@ body {
     min-height: 38px;
     padding: 0 14px;
     font-size: 10px;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .velqra-home-hero .velqra-routine-trigger {
+    min-height: 42px;
+    padding: 0 18px;
+    font-size: 11px;
   }
 }
 
@@ -2500,7 +2518,7 @@ body {
   inset: 0;
   display: flex;
   justify-content: flex-end;
-  background: rgba(28, 36, 30, .42);
+  background: rgba(28, 36, 30, .18);
   animation: velqra-backdrop-in 180ms ease both;
 }
 

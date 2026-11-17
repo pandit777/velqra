@@ -3198,7 +3198,7 @@ const routineOptionTerms = {
   Clarify: ['clarify', 'clarifying']
 };
 
-const RoutineFinder = ({ products, t, formatCurrency }) => {
+const RoutineFinder = ({ products, t, formatCurrency, animationCycle = 0 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [selections, setSelections] = useState([]);
@@ -3238,7 +3238,12 @@ const RoutineFinder = ({ products, t, formatCurrency }) => {
 
   return (
     <>
-      <button type="button" className="velqra-routine-trigger" onClick={() => setIsOpen(true)}>
+      <button
+        key={animationCycle}
+        type="button"
+        className={`velqra-routine-trigger${animationCycle > 0 ? ' is-visible' : ''}`}
+        onClick={() => setIsOpen(true)}
+      >
         {t('Find Your Product')}
       </button>
       {isOpen && createPortal(
@@ -3344,6 +3349,8 @@ export default function App() {
   const localization = { language, currency, rates: exchangeRates, t, formatCurrency: formatPrice };
   const [products, setProducts] = useState(getCachedProducts);
   const [catalogLoading, setCatalogLoading] = useState(() => getCachedProducts().length === 0);
+  const [heroVideoCycle, setHeroVideoCycle] = useState(0);
+  const heroVideoReachedEndRef = useRef(false);
   const [activeReviewsProduct, setActiveReviewsProduct] = useState(null);
   const [productStockDrafts, setProductStockDrafts] = useState({});
   const [stockUpdatingId, setStockUpdatingId] = useState(null);
@@ -5661,9 +5668,30 @@ export default function App() {
                           playsInline
                           preload="metadata"
                           aria-hidden="true"
+                          onPlay={() => {
+                            heroVideoReachedEndRef.current = false;
+                            setHeroVideoCycle(cycle => cycle + 1);
+                          }}
+                          onTimeUpdate={event => {
+                            const video = event.currentTarget;
+                            if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+
+                            const loopBoundary = Math.min(0.75, video.duration / 4);
+                            if (video.currentTime >= video.duration - loopBoundary) {
+                              heroVideoReachedEndRef.current = true;
+                            } else if (heroVideoReachedEndRef.current && video.currentTime <= loopBoundary) {
+                              heroVideoReachedEndRef.current = false;
+                              setHeroVideoCycle(cycle => cycle + 1);
+                            }
+                          }}
                         />
                         <div className="velqra-home-hero-cta">
-                          <RoutineFinder products={products} t={t} formatCurrency={formatPrice} />
+                          <RoutineFinder
+                            products={products}
+                            t={t}
+                            formatCurrency={formatPrice}
+                            animationCycle={heroVideoCycle}
+                          />
                         </div>
                       </section>
                     )}
