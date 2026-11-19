@@ -5,7 +5,7 @@
 .velqra-protected-blur {
   position: fixed;
   inset: 0;
-  z-index: 9999;
+  z-index: 2147483647;
   display: grid;
   place-items: center;
   background: rgba(15, 23, 42, 0.98);
@@ -19,7 +19,7 @@
   position: fixed;
   left: 50%;
   bottom: 24px;
-  z-index: 10000;
+  z-index: 2147483647;
   transform: translateX(-50%);
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 12px;
@@ -31,37 +31,10 @@
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
 
-.velqra-protection-watermark {
-  position: fixed;
-  inset: -30%;
-  z-index: 9998;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  align-content: space-around;
-  overflow: hidden;
-  opacity: 0.13;
-  pointer-events: none;
-  transform: rotate(-24deg);
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.velqra-protection-watermark span {
-  margin: 42px 28px;
-  white-space: nowrap;
-  color: #173b32;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
 @media print {
-  .velqra-storefront,
-  .velqra-protection-watermark {
+  html,
+  body {
     display: none !important;
-  }
-  body::after {
-    content: "VELQRA: Protected content cannot be printed";
   }
 }
 

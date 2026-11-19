@@ -22,7 +22,7 @@ Inspected frontend, backend, Supabase migrations, deployment configuration, seed
 | Medium | Uploads | Review photos are stored on Render's ephemeral filesystem. | Known limitation: migrate to Supabase Storage/private bucket before relying on persistent uploads. |
 | Medium | Auth | JWT expiration and issuer/audience are not consistently bounded. | Manual follow-up required; do not roll without compatibility testing. |
 | Low | Dependencies | No package vulnerabilities were reported before/after. | Keep locked dependencies patched and repeat `npm audit`. |
-| Medium | Screenshots | Browser screenshots cannot be cryptographically prevented. | Added route-aware watermarking, focus/visibility blur, print blocking, and shortcut/key deterrence for admin, orders, tracking, and checkout. This is best-effort only. |
+| Medium | Screenshots | Web code cannot prevent OS-level screenshots or capture by another device. | Added site-wide focus/visibility blur, print blocking, and best-effort keyboard/context-menu deterrence without watermarks. Mobile OS screenshot gestures and external cameras remain outside browser control. |
 | Deployment prerequisite | Database migration | Atomic reservation, one-time confirmation tokens, and idempotent order creation require database functions/columns. | Production application was reported successful on 2026-11-18. Verify the migration objects and validate checkout, payment retry/failure, cancellation, and replay before deploying this backend. |
 | Not fixed | Upload persistence | Review/product uploads may use local or configured object storage. | Supabase Storage setup and actual-file signature/re-encoding validation remain owner/setup work. |
 

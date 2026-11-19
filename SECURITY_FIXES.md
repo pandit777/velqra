@@ -11,8 +11,8 @@
 - Removed real-looking Supabase/project values from `.env.example`.
 - Removed duplicate/conflicting Open Graph and Twitter metadata.
 - Restricted robots indexing of private/account routes.
-- Added an unexecuted additive migration for order idempotency and atomic stock reservation.
-- Added route-aware screenshot deterrence and dynamic identity watermarks for admin, orders, tracking, and checkout.
+- Added an additive migration for order idempotency and atomic stock reservation; production SQL execution was reported successful on 2026-11-18, but database objects and live order flows were not independently verified.
+- Applied site-wide best-effort focus/visibility blur, print blocking, and supported keyboard/context-menu deterrence without identity watermarks. Browser code cannot block OS screenshots or external cameras.
 
 ## Verification
 

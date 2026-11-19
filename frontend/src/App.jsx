@@ -5169,6 +5169,8 @@ export default function App() {
     const changingPassword = adminPasswordChangeRequired;
 
     return (
+      <>
+      <ProtectedContent />
       <main className="min-h-screen bg-[#f1f1ef] px-4 py-10 text-slate-900 flex items-center justify-center">
         <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-xl">
           <div className="mb-6 text-center">
@@ -5269,26 +5271,14 @@ export default function App() {
           )}
         </section>
       </main>
+      </>
     );
   }
 
   return (
     <LocalizationContext.Provider value={localization}>
     <div className="velqra-storefront min-h-screen text-neutral-100 font-sans antialiased flex flex-col">
-      <ProtectedContent
-        protectedView={[
-          '/admin',
-          '/admin/login',
-          '/orders',
-          '/orders/track/'
-        ].some(path => location.pathname === path ||
-          (path.endsWith('/') && location.pathname.startsWith(path))) ||
-          isCartOpen
-        }
-        identity={isAdminLoggedIn
-          ? { ...currentUser, email: currentUser?.email || 'admin', phone: adminPhone }
-          : currentUser}
-      />
+      <ProtectedContent />
 
       {toast.show && (
         <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-[120] px-6 py-3 rounded-xl shadow-lg text-white font-bold text-sm transition-all ${
