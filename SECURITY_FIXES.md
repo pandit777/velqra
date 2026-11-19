@@ -12,6 +12,7 @@
 - Removed duplicate/conflicting Open Graph and Twitter metadata.
 - Restricted robots indexing of private/account routes.
 - Added an unexecuted additive migration for order idempotency and atomic stock reservation.
+- Added route-aware screenshot deterrence and dynamic identity watermarks for admin, orders, tracking, and checkout.
 
 ## Verification
 

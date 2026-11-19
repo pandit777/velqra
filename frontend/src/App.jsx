@@ -17,6 +17,7 @@ import LocaleControls from './i18n/LocaleControls';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import ProductReviewsModal, { getDemoReviewSummary, ReviewStars } from './components/ProductReviewsModal';
 import velqraLogo from './assets/velqra-logo.png';
+import ProtectedContent from './components/ProtectedContent';
 
 // =============================================
 // API URLs - SECURE (Environment Variables)
@@ -5270,6 +5271,20 @@ export default function App() {
   return (
     <LocalizationContext.Provider value={localization}>
     <div className="velqra-storefront min-h-screen text-neutral-100 font-sans antialiased flex flex-col">
+      <ProtectedContent
+        protectedView={[
+          '/admin',
+          '/admin/login',
+          '/orders',
+          '/orders/track/'
+        ].some(path => location.pathname === path ||
+          (path.endsWith('/') && location.pathname.startsWith(path))) ||
+          isCartOpen
+        }
+        identity={isAdminLoggedIn
+          ? { ...currentUser, email: currentUser?.email || 'admin', phone: adminPhone }
+          : currentUser}
+      />
 
       {toast.show && (
         <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-[120] px-6 py-3 rounded-xl shadow-lg text-white font-bold text-sm transition-all ${
