@@ -9,6 +9,12 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
+if (process.env.NODE_ENV === 'production' &&
+    process.env.CONFIRM_DESTRUCTIVE_SEED !== 'YES_DELETE_AND_RESEED') {
+  console.error('Refusing destructive seed in production. Set CONFIRM_DESTRUCTIVE_SEED=YES_DELETE_AND_RESEED only for an approved maintenance action.');
+  process.exit(1);
+}
+
 // =============================================
 // SUPABASE CONNECTION
 // =============================================

@@ -1,4 +1,5 @@
 const express = require('express');
+const helmet = require('helmet');
 const { createClient } = require('@supabase/supabase-js');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -76,6 +77,47 @@ if (process.env.NODE_ENV === 'production') {
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+      connectSrc: ["'self'", 'https://*.supabase.co', 'https://secure.payu.in', 'https://test.payu.in'],
+      frameAncestors: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'", 'https://secure.payu.in', 'https://test.payu.in']
+    }
+  },
+  hsts: process.env.NODE_ENV === 'production'
+    ? { maxAge: 31536000, includeSubDomains: true }
+    : false
+}));
+
+app.use((req, res, next) => {
+  const requestId = String(req.headers['x-request-id'] || crypto.randomUUID()).slice(0, 128);
+  req.requestId = requestId;
+  res.set('X-Request-ID', requestId);
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    if (req.path.startsWith('/api')) {
+      console.log(JSON.stringify({
+        event: 'http_request',
+        requestId,
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt
+      }));
+    }
+  });
+  next();
+});
 
 app.use((req, res, next) => {
   res.set({
@@ -1375,7 +1417,7 @@ app.post('/api/auth/reset-password', otpVerifyRateLimit, otpTargetVerifyRateLimi
 app.get('/api/products', async (req, res) => {
   try {
     const { category, search, sort } = req.query;
-    let query = supabase.from('products').select('*');
+    let query = supabase.from('products').select('*').eq('is_active', true).limit(200);
 
     if (category && category !== 'All') query = query.eq('category', category);
     if (search) {
@@ -1399,7 +1441,7 @@ app.get('/api/products', async (req, res) => {
 
 app.get('/api/products/:id', async (req, res) => {
   try {
-    const { data: product, error } = await supabase.from('products').select('*').eq('id', req.params.id).single();
+    const { data: product, error } = await supabase.from('products').select('*').eq('id', req.params.id).eq('is_active', true).maybeSingle();
     if (error || !product) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, product: formatProduct(product) });
   } catch (error) {
@@ -3857,9 +3899,17 @@ app.patch('/api/admin/returns/:id/status', requireAdmin, async (req, res) => {
 app.get('/health', async (req, res) => {
   try {
     const { error } = await supabase.from('products').select('id').limit(1);
-    res.status(error ? 503 : 200).json({ status: error ? 'DEGRADED' : 'OK' });
+    res.status(error ? 503 : 200).json({
+      status: error ? 'DEGRADED' : 'OK',
+      application: 'OK',
+      database: error ? 'DEGRADED' : 'OK'
+    });
   } catch {
-    res.status(503).json({ status: 'DEGRADED' });
+    res.status(503).json({
+      status: 'DEGRADED',
+      application: 'OK',
+      database: 'DEGRADED'
+    });
   }
 });
 

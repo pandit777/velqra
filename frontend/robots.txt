@@ -6,6 +6,11 @@ Allow: /
 Disallow: /admin/
 Disallow: /auth/
 Disallow: /api/
+Disallow: /login
+Disallow: /register
+Disallow: /forgot-password
+Disallow: /account
+Disallow: /orders/
 
 # Allow crawling of product pages
 Allow: /product/

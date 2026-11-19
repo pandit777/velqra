@@ -7,6 +7,12 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
 const adminPassword = process.env.INITIAL_ADMIN_PASSWORD || '';
 
+if (process.env.NODE_ENV === 'production' &&
+    process.env.CONFIRM_ADMIN_PROVISION !== 'YES_CREATE_ADMIN') {
+  console.error('Refusing admin provisioning in production. Set CONFIRM_ADMIN_PROVISION=YES_CREATE_ADMIN only for an approved provisioning action.');
+  process.exit(1);
+}
+
 if (!supabaseUrl || !supabaseSecretKey) {
   console.error('Supabase credentials are missing.');
   process.exit(1);
