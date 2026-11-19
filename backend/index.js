@@ -416,7 +416,7 @@ app.use(cors((req, cb) => {
     return cb(null, {
       origin: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key']
     });
   }
   const error = new Error('Not allowed by CORS');
@@ -2393,10 +2393,26 @@ app.post('/api/orders/verify-otp', requireAuth, otpVerifyRateLimit, otpTargetVer
       return res.status(400).json({ success: false, message: 'Invalid OTP' });
     }
 
-    await supabase.from('order_otps').delete().eq('user_id', userId);
+    const { data: consumedOtp, error: consumeError } = await supabase
+      .from('order_otps').delete().eq('user_id', userId)
+      .eq('otp', otpData.otp).select('user_id').maybeSingle();
+    if (consumeError) throw consumeError;
+    if (!consumedOtp) {
+      return res.status(409).json({ success: false, message: 'OTP already used. Request a new one.' });
+    }
+
+    const confirmationTokenId = crypto.randomUUID();
+    const confirmationExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const { error: confirmationTokenError } = await supabase
+      .from('order_confirmation_tokens').insert({
+        id: confirmationTokenId,
+        user_id: userId,
+        expires_at: confirmationExpiresAt
+      });
+    if (confirmationTokenError) throw confirmationTokenError;
 
     const orderConfirmToken = jwt.sign(
-      { userId, purpose: 'order-confirmation' },
+      { userId, purpose: 'order-confirmation', jti: confirmationTokenId },
       jwtSecret, { expiresIn: '10m' }
     );
 
@@ -2469,12 +2485,18 @@ app.post('/api/payment/payu/initiate', requireAuth, noStore, async (req, res) =>
       updatedBy: 'System',
       details: `PayU txnid: ${txnid}`
     });
-    const { error: updateError } = await supabase.from('orders').update({
-      reference_id: txnid,
-      status: 'Payment Verification Pending',
-      status_history: history,
-      updated_at: new Date().toISOString()
-    }).eq('id', orderId);
+    const { error: updateError } = await supabase.rpc('initiate_order_payment', {
+      p_order_id: orderId,
+      p_user_id: req.userId,
+      p_reference_id: txnid,
+      p_status_history: history
+    });
+    if (updateError?.message?.includes('Insufficient stock')) {
+      return res.status(409).json({ success: false, message: 'This order no longer has enough stock to start payment' });
+    }
+    if (updateError?.message?.includes('Payment already in progress')) {
+      return res.status(409).json({ success: false, message: 'A payment is already in progress for this order' });
+    }
     if (updateError) throw updateError;
 
     res.json({
@@ -2541,46 +2563,15 @@ const verifyPayuTransaction = async (txnid) => {
 };
 
 const markPayuOrderVerified = async (order, transaction) => {
-  const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
-  history.push({
-    status: 'Payment Verified',
-    timestamp: new Date().toISOString(),
-    updatedBy: 'PayU',
-    details: `PayU ID: ${String(transaction.mihpayid || 'N/A').slice(0, 100)}`
+  const { data: confirmation, error } = await supabase.rpc('confirm_order_payment', {
+    p_order_id: order.id,
+    p_reference_id: order.reference_id,
+    p_mihpayid: String(transaction.mihpayid || 'N/A').slice(0, 100)
   });
-
-  const { data: updatedOrder, error: updateError } = await supabase.from('orders').update({
-    status: 'Payment Verified',
-    status_history: history,
-    updated_at: new Date().toISOString()
-  }).eq('id', order.id).eq('reference_id', order.reference_id)
-    .eq('status', 'Payment Verification Pending').select('*').maybeSingle();
-  if (updateError) throw updateError;
-
-  if (!updatedOrder) {
-    const { data: latestOrder, error } = await supabase.from('orders')
-      .select('*').eq('id', order.id).maybeSingle();
-    if (error) throw error;
-    return { order: latestOrder };
-  }
-
-  void sendMetaPurchaseEvent(updatedOrder);
-  try {
-    for (const item of (order.items || [])) {
-      if (item.product_id) {
-        const { data: product } = await supabase.from('products')
-          .select('stock').eq('id', item.product_id).single();
-        if (product) {
-          await supabase.from('products').update({
-            stock: Math.max(0, (product.stock || 0) - (item.qty || 1))
-          }).eq('id', item.product_id);
-        }
-      }
-    }
-  } catch (stockError) {
-    console.error('Payment verified but stock update failed:', stockError.message);
-  }
-
+  if (error) throw error;
+  const updatedOrder = confirmation?.order;
+  if (!updatedOrder) throw new Error('PayU confirmation returned no order');
+  if (confirmation.updated) void sendMetaPurchaseEvent(updatedOrder);
   return { order: updatedOrder };
 };
 
@@ -2679,18 +2670,15 @@ const handlePayuCallback = async (req, res) => {
         updatedBy: 'PayU',
         details: 'Payment failed at gateway'
       });
-      const { data: updatedOrder, error: updateError } = await supabase.from('orders').update({
-        status: 'Payment Failed',
-        status_history: history,
-        updated_at: new Date().toISOString()
-      }).eq('id', order.id).eq('reference_id', txnid)
-        .eq('status', 'Payment Verification Pending').select('id').maybeSingle();
-      if (updateError) throw updateError;
-      if (!updatedOrder) {
-        const { data: latestOrder } = await supabase.from('orders')
-          .select('*').eq('id', order.id).maybeSingle();
-        const alreadyPaid = latestOrder && isOnlinePaymentVerified(latestOrder);
-        return res.redirect(`${frontendUrl}/orders?payment=${alreadyPaid ? 'success' : 'failure'}&txnid=${encodeURIComponent(txnid)}`);
+      const { data: updatedOrder, error: releaseError } = await supabase.rpc('release_order_stock', {
+        p_order_id: order.id,
+        p_target_status: 'Payment Failed',
+        p_status_history: history
+      });
+      if (releaseError) throw releaseError;
+      if (!updatedOrder) throw new Error('Payment failure update returned no order');
+      if (isOnlinePaymentVerified(updatedOrder)) {
+        return res.redirect(`${frontendUrl}/orders?payment=success&txnid=${encodeURIComponent(txnid)}`);
       }
     }
 
@@ -2725,15 +2713,14 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       items, total, paymentMethod, delivery, orderConfirmToken,
       attribution, marketingConsent
     } = req.body;
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ success: false, message: 'Login required' });
-    const decodedUser = jwt.verify(authHeader.split(' ')[1], jwtSecret);
-    const userId = decodedUser.userId;
+    const userId = req.userId;
     if (!userId) return res.status(401).json({ success: false, message: 'Invalid session' });
     if (!['cod', 'online'].includes(paymentMethod)) {
       return res.status(400).json({ success: false, message: 'Invalid payment method' });
     }
 
+    let confirmationTokenId = null;
+    let idempotencyKey = req.get('Idempotency-Key');
     if (paymentMethod === 'cod') {
       if (!orderConfirmToken) {
         return res.status(400).json({
@@ -2743,12 +2730,19 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       }
       try {
         const decodedToken = jwt.verify(orderConfirmToken, jwtSecret);
-        if (decodedToken.purpose !== 'order-confirmation' || decodedToken.userId !== userId) {
+        if (decodedToken.purpose !== 'order-confirmation' || decodedToken.userId !== userId ||
+            typeof decodedToken.jti !== 'string' ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decodedToken.jti)) {
           return res.status(401).json({ success: false, message: 'Invalid confirmation token' });
         }
+        confirmationTokenId = decodedToken.jti;
+        idempotencyKey = confirmationTokenId;
       } catch {
         return res.status(401).json({ success: false, message: 'Confirmation token expired' });
       }
+    } else if (typeof idempotencyKey !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)) {
+      return res.status(400).json({ success: false, message: 'A valid Idempotency-Key is required' });
     }
     if (paymentMethod === 'cod') {
       const primaryPhone = String(delivery?.phone || '').replace(/\D/g, '');
@@ -2881,11 +2875,27 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       }]
     };
 
-    const { data: order, error: orderError } = await supabase.from('orders').insert(orderData).select().single();
+    const { data: creation, error: orderError } = await supabase.rpc('create_order_with_stock', {
+      p_order: orderData,
+      p_stock_items: orderItems.map(item => ({
+        product_id: item.product_id,
+        qty: item.qty
+      })),
+      p_idempotency_key: idempotencyKey,
+      p_confirmation_token_id: confirmationTokenId
+    });
     if (orderError) {
-      console.error('Order insert error:', orderError);
+      if (orderError.message?.includes('Insufficient stock')) {
+        return res.status(409).json({ success: false, message: 'A product in your cart no longer has enough stock' });
+      }
+      if (orderError.message?.includes('Invalid or expired order confirmation')) {
+        return res.status(401).json({ success: false, message: 'Confirmation token expired or already used' });
+      }
+      console.error('Order creation transaction failed:', orderError);
       return res.status(500).json({ success: false, message: 'Failed to place order' });
     }
+    const order = creation?.order;
+    if (!order) throw new Error('Order creation transaction returned no order');
 
     if (userId) {
       await supabase.from('carts').update({
@@ -2895,7 +2905,7 @@ app.post('/api/orders', requireAuth, async (req, res) => {
     }
 
     console.log(`✅ Order placed: ${order.id}`);
-    if (paymentMethod === 'cod') void sendMetaPurchaseEvent(order);
+    if (paymentMethod === 'cod' && creation.created) void sendMetaPurchaseEvent(order);
     res.status(201).json({ success: true, message: 'Order placed', order: formatOrder(order) });
   } catch (error) {
     console.error('❌ Error creating order:', error);
@@ -3257,6 +3267,22 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
     const history = order.status_history || [];
     history.push({ status, timestamp: new Date().toISOString(), updatedBy: user?.name || 'Admin' });
 
+    if (status === 'Cancelled' || status === 'Payment Failed') {
+      const { data: updated, error } = await supabase.rpc('release_order_stock', {
+        p_order_id: order.id,
+        p_target_status: status,
+        p_status_history: history
+      });
+      if (error) throw error;
+      if (!updated || updated.status !== status) {
+        return res.status(409).json({ success: false, message: 'Order status changed; refresh and try again' });
+      }
+      return res.json({
+        success: true, message: 'Status updated',
+        order: formatOrder(updated), tracking: { timeline: getOrderTimeline(updated) }
+      });
+    }
+
     const { data: updated } = await supabase.from('orders').update({
       status, status_history: history, updated_at: new Date().toISOString()
     }).eq('id', req.params.id).select().single();
@@ -3293,9 +3319,15 @@ app.patch('/api/orders/:id/cancel', requireAuth, async (req, res) => {
     const history = order.status_history || [];
     history.push({ status: 'Cancelled', timestamp: new Date().toISOString(), updatedBy: isAdmin ? 'Admin' : 'User' });
 
-    const { data: updated } = await supabase.from('orders').update({
-      status: 'Cancelled', status_history: history, updated_at: new Date().toISOString()
-    }).eq('id', req.params.id).select().single();
+    const { data: updated, error: cancelError } = await supabase.rpc('release_order_stock', {
+      p_order_id: order.id,
+      p_target_status: 'Cancelled',
+      p_status_history: history
+    });
+    if (cancelError) throw cancelError;
+    if (!updated || updated.status !== 'Cancelled') {
+      return res.status(409).json({ success: false, message: 'Order status changed; refresh and try again' });
+    }
 
     res.json({ success: true, message: 'Cancelled', order: formatOrder(updated) });
   } catch (error) {

@@ -94,13 +94,15 @@ export const api = {
 
   // Create order
   async createOrder(orderData, token) {
+    const { idempotencyKey = crypto.randomUUID(), ...payload } = orderData;
     const response = await fetch(`${API_URL}/orders`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
+        'Authorization': `Bearer ${token}`,
+        'Idempotency-Key': idempotencyKey
       },
-      body: JSON.stringify(orderData)
+      body: JSON.stringify(payload)
     });
     return response.json();
   }

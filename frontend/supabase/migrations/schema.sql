@@ -85,10 +85,15 @@ create table if not exists public.orders (
   status_history jsonb not null default '[]'::jsonb,
   attribution jsonb not null default '{}'::jsonb,
   marketing_consent boolean not null default false,
+  idempotency_key text,
+  stock_reserved boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+create unique index if not exists orders_idempotency_key_unique_idx
+  on public.orders (idempotency_key)
+  where idempotency_key is not null;
 create unique index if not exists orders_reference_id_unique_idx
   on public.orders (reference_id)
   where reference_id is not null;
@@ -143,6 +148,14 @@ create table if not exists public.order_otps (
   phone text not null default '',
   otp text not null,
   expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.order_confirmation_tokens (
+  id uuid primary key,
+  user_id uuid not null references public.users (id) on delete cascade,
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -228,6 +241,7 @@ alter table public.carts enable row level security;
 alter table public.registration_otps enable row level security;
 alter table public.password_resets enable row level security;
 alter table public.order_otps enable row level security;
+alter table public.order_confirmation_tokens enable row level security;
 alter table public.bank_details enable row level security;
 alter table public.product_reviews enable row level security;
 alter table public.return_requests enable row level security;
@@ -235,6 +249,8 @@ alter table public.return_otps enable row level security;
 
 revoke insert, update, delete on public.products from anon, authenticated;
 grant select on public.products to anon, authenticated;
+revoke all on public.order_confirmation_tokens from anon, authenticated;
+grant all on public.order_confirmation_tokens to service_role;
 
 drop policy if exists products_public_read on public.products;
 create policy products_public_read

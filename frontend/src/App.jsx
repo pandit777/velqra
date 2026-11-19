@@ -3977,6 +3977,7 @@ export default function App() {
     const finalTotal = Math.max(0, totalCartPrice - promoDiscountAmount) + deliveryCharge;
 
     const orderData = {
+      idempotencyKey: window.crypto.randomUUID(),
       items: cart.map(item => ({
         _id: item._id,
         name: item.name,
@@ -4022,7 +4023,8 @@ export default function App() {
           {
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
+              'Authorization': `Bearer ${token}`,
+              'Idempotency-Key': orderData.idempotencyKey
             }
           }
         );
@@ -4100,13 +4102,15 @@ export default function App() {
     try {
       setPlacingOrder(true);
       const token = sessionStorage.getItem('velqra_user_token');
+      const { idempotencyKey, ...orderPayload } = orderData;
       const response = await axios.post(
         `${API_URL}/orders`,
-        { ...orderData, orderConfirmToken },
+        { ...orderPayload, orderConfirmToken },
         {
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            'Authorization': `Bearer ${token}`,
+            'Idempotency-Key': idempotencyKey
           }
         }
       );
