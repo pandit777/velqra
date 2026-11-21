@@ -12,6 +12,7 @@ const axios = require('axios');
 const multer = require('multer');
 const crypto = require('crypto');
 const { generateInvoicePdf } = require('./utils/invoice');
+const { createPayuRequestHash, createPayuResponseHash } = require('./utils/payu');
 
 dotenv.config();
 
@@ -2474,9 +2475,15 @@ app.post('/api/payment/payu/initiate', requireAuth, noStore, async (req, res) =>
       return res.status(400).json({ success: false, message: 'Order contact or total is invalid' });
     }
 
-    // PayU hash: sha512(key|txnid|amount|productinfo|firstname|email|udf1..udf5||||||salt)
-    const hashString = `${payuKey}|${txnid}|${amountStr}|${productinfo}|${firstname}|${emailStr}|||||||||||${payuSalt}`;
-    const hash = crypto.createHash('sha512').update(hashString).digest('hex');
+    const hash = createPayuRequestHash({
+      key: payuKey,
+      txnid,
+      amount: amountStr,
+      productinfo,
+      firstname,
+      email: emailStr,
+      salt: payuSalt
+    });
 
     const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
     history.push({
@@ -2619,16 +2626,21 @@ const handlePayuCallback = async (req, res) => {
       return res.redirect(`${frontendUrl}/orders?payment=failure&reason=txn_not_found`);
     }
 
-    // 🔐 Reverse hash verify
-    // Formula: sha512(salt|status|udf10|...|udf1|email|firstname|productinfo|amount|txnid|key)
-    let reverseHashString;
-    if (additionalCharges) {
-      reverseHashString = `${additionalCharges}|${payuSalt}|${status}||||||||||${udf5}|${udf4}|${udf3}|${udf2}|${udf1}|${email}|${firstname}|${productinfo}|${amount}|${txnid}|${payuKey}`;
-    } else {
-      reverseHashString = `${payuSalt}|${status}||||||||||${udf5}|${udf4}|${udf3}|${udf2}|${udf1}|${email}|${firstname}|${productinfo}|${amount}|${txnid}|${payuKey}`;
-    }
-
-    const calculatedHash = crypto.createHash('sha512').update(reverseHashString).digest('hex');
+    const calculatedHash = createPayuResponseHash({
+      additionalCharges,
+      status,
+      txnid,
+      key: payuKey,
+      amount,
+      productinfo,
+      firstname,
+      email,
+      udf1,
+      udf2,
+      udf3,
+      udf4,
+      udf5
+    }, payuSalt);
 
     if (callbackKey !== payuKey || !matchesHash(calculatedHash, hash) ||
         !Number.isFinite(Number(amount)) || Number(amount).toFixed(2) !== Number(order.total).toFixed(2)) {

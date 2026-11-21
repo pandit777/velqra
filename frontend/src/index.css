@@ -2,19 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-.velqra-protected-blur {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483647;
-  display: grid;
-  place-items: center;
-  background: rgba(15, 23, 42, 0.98);
-  color: white;
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
-  pointer-events: all;
-}
-
 .velqra-protected-notice {
   position: fixed;
   left: 50%;
